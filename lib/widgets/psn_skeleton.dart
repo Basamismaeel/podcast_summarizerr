@@ -17,9 +17,13 @@ class PSNSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final base = cs.surfaceContainerHighest;
+    final highlight = cs.surfaceContainerHigh;
+
     return Shimmer.fromColors(
-      baseColor: Tokens.bgElevated,
-      highlightColor: Tokens.bgOverlay,
+      baseColor: base,
+      highlightColor: highlight,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: List.generate(lines, (i) {
@@ -30,7 +34,7 @@ class PSNSkeleton extends StatelessWidget {
               height: lineHeight,
               width: isLast ? 160 : double.infinity,
               decoration: BoxDecoration(
-                color: Tokens.bgElevated,
+                color: base,
                 borderRadius: BorderRadius.circular(Tokens.radiusSm),
               ),
             ),
@@ -46,15 +50,19 @@ class PSNSkeletonCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final base = cs.surfaceContainerHighest;
+    final highlight = cs.surfaceContainerHigh;
+
     return Shimmer.fromColors(
-      baseColor: Tokens.bgElevated,
-      highlightColor: Tokens.bgOverlay,
+      baseColor: base,
+      highlightColor: highlight,
       child: Container(
         height: 80,
         decoration: BoxDecoration(
-          color: Tokens.bgElevated,
+          color: base,
           borderRadius: BorderRadius.circular(Tokens.radiusMd),
-          border: Border.all(color: Tokens.borderLight),
+          border: Border.all(color: cs.outlineVariant),
         ),
       ),
     );

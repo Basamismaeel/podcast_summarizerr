@@ -31,12 +31,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     final isLast = _currentPage == 2;
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
 
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
-            // Header
             Padding(
               padding: const EdgeInsets.symmetric(
                 horizontal: Tokens.spaceMd,
@@ -45,24 +46,23 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               child: Row(
                 children: [
                   Container(
-                    width: 26,
-                    height: 26,
-                    decoration: const BoxDecoration(
-                      color: Tokens.accentDim,
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: cs.primaryContainer,
                       shape: BoxShape.circle,
                     ),
-                    child: const Center(
-                      child: Icon(Icons.podcasts, size: 16, color: Colors.white),
-                    ),
+                    child: Icon(Icons.podcasts, size: 18, color: cs.primary),
                   ),
-                  const SizedBox(width: 10),
-                  Text('Podcast Safety Net', style: Tokens.headingS),
+                  const SizedBox(width: Tokens.spaceSm + 2),
+                  Text(
+                    'Podcast Safety Net',
+                    style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                  ),
                   const Spacer(),
                 ],
               ),
             ),
-
-            // Page content
             Expanded(
               child: PageView(
                 controller: _controller,
@@ -76,8 +76,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 ],
               ),
             ),
-
-            // Footer
             Padding(
               padding: const EdgeInsets.fromLTRB(
                 Tokens.spaceMd,
@@ -94,13 +92,14 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                       3,
                       (i) => AnimatedContainer(
                         duration: Tokens.durationFast,
+                        curve: Tokens.springCurve,
                         margin: const EdgeInsets.symmetric(horizontal: 4),
                         width: _currentPage == i ? 20 : 6,
                         height: 6,
                         decoration: BoxDecoration(
                           color: _currentPage == i
-                              ? Tokens.accent
-                              : Tokens.borderLight,
+                              ? cs.primary
+                              : cs.outlineVariant.withValues(alpha: 0.5),
                           borderRadius:
                               BorderRadius.circular(Tokens.radiusFull),
                         ),
@@ -117,13 +116,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                             variant: ButtonVariant.ghost,
                             fullWidth: true,
                             onTap: () async {
-                              // Completing onboarding without asking
-                              // for notifications.
                               final prefs =
                                   await SharedPreferences.getInstance();
                               await prefs.setBool('onboarding_done', true);
 
-                              if (!mounted) return;
+                              if (!context.mounted) return;
                               ref
                                   .read(settingsProvider.notifier)
                                   .completeOnboarding();
@@ -153,15 +150,16 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   void _nextPage() {
     _controller.nextPage(
       duration: Tokens.durationNormal,
-      curve: Curves.easeInOut,
+      curve: Tokens.springCurve,
     );
   }
 
   Future<void> _onGetStarted() async {
+    final router = GoRouter.of(context);
     await _showPermissionSheet();
     if (!mounted) return;
     ref.read(settingsProvider.notifier).completeOnboarding();
-    context.go('/');
+    router.go('/');
   }
 
   Future<void> _showPermissionSheet() async {
@@ -172,6 +170,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (ctx) {
+        final sheetText = Theme.of(ctx).textTheme;
         return PSNBottomSheet(
           title: 'One permission needed',
           showHandle: true,
@@ -182,7 +181,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               Text(
                 'To show the quick-save button, we need notification permission. '
                 'We will never send spam.',
-                style: Tokens.bodyL,
+                style: sheetText.bodyLarge,
               ),
               const SizedBox(height: Tokens.spaceLg),
               PSNButton(
@@ -192,6 +191,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   final prefs = await SharedPreferences.getInstance();
                   await prefs.setBool('onboarding_done', true);
                   await NotificationService.instance.requestPermission();
+                  if (!ctx.mounted) return;
                   if (Navigator.of(ctx).canPop()) {
                     Navigator.of(ctx).pop();
                   }
@@ -205,6 +205,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 onTap: () async {
                   final prefs = await SharedPreferences.getInstance();
                   await prefs.setBool('onboarding_done', true);
+                  if (!ctx.mounted) return;
                   if (Navigator.of(ctx).canPop()) {
                     Navigator.of(ctx).pop();
                   }
@@ -218,13 +219,14 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 }
 
-// ── Page 1: The Problem ─────────────────────────────────────────────────
-
 class _ProblemPage extends StatelessWidget {
   const _ProblemPage();
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: Tokens.spaceXl,
@@ -233,29 +235,36 @@ class _ProblemPage extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _GlowingEmojiCircle(
-            emoji: '💨',
-            glowColor: Tokens.accent,
+          _HeroCircle(
+            child: Icon(
+              Icons.hourglass_empty_rounded,
+              size: 56,
+              color: cs.primary,
+            ),
           )
               .animate()
               .fade(duration: 300.ms)
               .scale(begin: const Offset(0.8, 0.8), end: const Offset(1, 1)),
-          SizedBox(height: Tokens.spaceXl),
-          Text('Insights disappear.', style: Tokens.headingXL)
+          const SizedBox(height: Tokens.spaceXl),
+          Text(
+            'Insights disappear.',
+            style: tt.displaySmall?.copyWith(fontWeight: FontWeight.w600),
+            textAlign: TextAlign.center,
+          )
               .animate()
               .fade(duration: 300.ms, delay: 150.ms)
               .slideY(begin: 0.2, end: 0),
-          SizedBox(height: Tokens.spaceSm),
+          const SizedBox(height: Tokens.spaceSm),
           Text(
             'You hear something brilliant at minute 34.\n'
             'You think you\'ll remember it. You never do.',
-            style: Tokens.bodyL,
+            style: tt.bodyLarge,
             textAlign: TextAlign.center,
           )
               .animate()
               .fade(duration: 300.ms, delay: 250.ms)
               .slideY(begin: 0.2, end: 0),
-          SizedBox(height: Tokens.spaceXl),
+          const SizedBox(height: Tokens.spaceXl),
           const _ProblemPodcastCard()
               .animate()
               .fade(duration: 300.ms, delay: 350.ms)
@@ -271,6 +280,9 @@ class _ProblemPodcastCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return PSNCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -281,12 +293,10 @@ class _ProblemPodcastCard extends StatelessWidget {
                 width: 32,
                 height: 32,
                 decoration: BoxDecoration(
-                  color: Tokens.bgElevated,
+                  color: cs.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(Tokens.radiusSm),
                 ),
-                child: const Center(
-                  child: Text('🎙️', style: TextStyle(fontSize: 18)),
-                ),
+                child: Icon(Icons.mic_rounded, color: cs.primary, size: 20),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -295,15 +305,19 @@ class _ProblemPodcastCard extends StatelessWidget {
                   children: [
                     Text(
                       'The Joe Rogan Experience',
-                      style: Tokens.bodyM
-                          .copyWith(color: Tokens.textPrimary),
+                      style: tt.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w500,
+                        color: cs.onSurface,
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 2),
                     Text(
                       'Now at 34:12 — something important was just said',
-                      style: Tokens.bodyS,
+                      style: tt.bodyMedium?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -312,19 +326,19 @@ class _ProblemPodcastCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: Tokens.spaceSm + 4),
           ClipRRect(
             borderRadius: BorderRadius.circular(Tokens.radiusFull),
-            child: Container(
+            child: SizedBox(
               height: 4,
-              color: Tokens.bgElevated,
-              alignment: Alignment.centerLeft,
-              child: FractionallySizedBox(
-                alignment: Alignment.centerLeft,
-                widthFactor: 0.5,
-                child: Container(
-                  color: Tokens.accent,
-                ),
+              child: Stack(
+                children: [
+                  Container(color: cs.surfaceContainerHighest),
+                  FractionallySizedBox(
+                    widthFactor: 0.5,
+                    child: Container(color: cs.primary),
+                  ),
+                ],
               ),
             ),
           ),
@@ -334,18 +348,19 @@ class _ProblemPodcastCard extends StatelessWidget {
   }
 }
 
-// ── Page 2: The Solution ────────────────────────────────────────────────
-
 class _SolutionPage extends StatelessWidget {
   const _SolutionPage();
 
+  static const _methods = <(IconData, String, String)>[
+    (Icons.notifications_active_outlined, 'Notification Banner', '100% reliable'),
+    (Icons.graphic_eq_rounded, 'Voice Command', 'Hands-free'),
+    (Icons.vibration_rounded, 'Shake to Save', 'Always on'),
+  ];
+
   @override
   Widget build(BuildContext context) {
-    const methods = [
-      ('🔔', 'Notification Banner', '100% reliable'),
-      ('🎤', 'Voice Command', 'Hands-free'),
-      ('📳', 'Shake to Save', 'Always on'),
-    ];
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
 
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -355,34 +370,42 @@ class _SolutionPage extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _GlowingEmojiCircle(
-            emoji: '🔖',
-            glowColor: Tokens.success,
+          _HeroCircle(
+            useTertiary: true,
+            child: Icon(
+              Icons.bookmark_added_rounded,
+              size: 56,
+              color: cs.tertiary,
+            ),
           )
               .animate()
               .fade(duration: 300.ms)
               .scale(begin: const Offset(0.8, 0.8), end: const Offset(1, 1)),
-          SizedBox(height: Tokens.spaceXl),
-          Text('One tap. Saved.', style: Tokens.headingXL)
+          const SizedBox(height: Tokens.spaceXl),
+          Text(
+            'One tap. Saved.',
+            style: tt.displaySmall?.copyWith(fontWeight: FontWeight.w600),
+            textAlign: TextAlign.center,
+          )
               .animate()
               .fade(duration: 300.ms, delay: 150.ms)
               .slideY(begin: 0.2, end: 0),
-          SizedBox(height: Tokens.spaceSm),
+          const SizedBox(height: Tokens.spaceSm),
           Text(
             'Keep using Spotify. When you hear something good, tap once.\n'
             'The AI summary waits for you.',
-            style: Tokens.bodyL,
+            style: tt.bodyLarge,
             textAlign: TextAlign.center,
           )
               .animate()
               .fade(duration: 300.ms, delay: 250.ms)
               .slideY(begin: 0.2, end: 0),
-          SizedBox(height: Tokens.spaceXl),
-          for (var i = 0; i < methods.length; i++)
+          const SizedBox(height: Tokens.spaceXl),
+          for (var i = 0; i < _methods.length; i++)
             _MethodCard(
-              emoji: methods[i].$1,
-              title: methods[i].$2,
-              badge: methods[i].$3,
+              icon: _methods[i].$1,
+              title: _methods[i].$2,
+              badge: _methods[i].$3,
             )
                 .animate()
                 .fade(duration: 250.ms, delay: (100 * (i + 1)).ms)
@@ -396,50 +419,55 @@ class _SolutionPage extends StatelessWidget {
 
 class _MethodCard extends StatelessWidget {
   const _MethodCard({
-    required this.emoji,
+    required this.icon,
     required this.title,
     required this.badge,
   });
 
-  final String emoji;
+  final IconData icon;
   final String title;
   final String badge;
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: Tokens.spaceSm),
       child: PSNCard(
         padding: const EdgeInsets.symmetric(
           horizontal: Tokens.spaceMd,
-          vertical: 12,
+          vertical: Tokens.spaceSm + 4,
         ),
         child: Row(
           children: [
-            Text(emoji, style: const TextStyle(fontSize: 18)),
+            Icon(icon, size: 22, color: cs.primary),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 title,
-                style: Tokens.bodyM.copyWith(color: Tokens.textPrimary),
+                style: tt.bodyLarge?.copyWith(color: cs.onSurface),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: Tokens.spaceSm),
             Container(
               padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: Tokens.spaceXs),
               decoration: BoxDecoration(
-                color: Tokens.successDim,
+                color: cs.tertiaryContainer,
                 borderRadius:
                     BorderRadius.circular(Tokens.radiusFull),
                 border: Border.all(
-                  color: Tokens.success.withValues(alpha: 0.6),
-                  width: 1,
+                  color: cs.tertiary.withValues(alpha: 0.35),
                 ),
               ),
               child: Text(
                 badge,
-                style: Tokens.bodyS.copyWith(color: Tokens.success),
+                style: tt.bodySmall?.copyWith(
+                  color: cs.onTertiaryContainer,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
           ],
@@ -449,13 +477,13 @@ class _MethodCard extends StatelessWidget {
   }
 }
 
-// ── Page 3: The Summary ─────────────────────────────────────────────────
-
 class _SummaryPage extends StatelessWidget {
   const _SummaryPage();
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     final bullets = [
       '3 key ideas from this 10‑minute stretch, written in plain language.',
       'Actionable takeaways you can revisit in seconds, not minutes.',
@@ -470,37 +498,43 @@ class _SummaryPage extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _GlowingEmojiCircle(
-            emoji: '✨',
-            glowColor: Tokens.accent,
+          _HeroCircle(
+            child: Icon(
+              Icons.auto_awesome_rounded,
+              size: 56,
+              color: cs.primary,
+            ),
           )
               .animate()
               .fade(duration: 300.ms)
               .scale(begin: const Offset(0.8, 0.8), end: const Offset(1, 1)),
-          SizedBox(height: Tokens.spaceXl),
-          Text('AI reads it for you.', style: Tokens.headingXL)
+          const SizedBox(height: Tokens.spaceXl),
+          Text(
+            'AI reads it for you.',
+            style: tt.displaySmall?.copyWith(fontWeight: FontWeight.w600),
+            textAlign: TextAlign.center,
+          )
               .animate()
               .fade(duration: 300.ms, delay: 150.ms)
               .slideY(begin: 0.2, end: 0),
-          SizedBox(height: Tokens.spaceSm),
+          const SizedBox(height: Tokens.spaceSm),
           Text(
             'Come back anytime. A 3‑point summary of exactly what you heard '
             'is already waiting.',
-            style: Tokens.bodyL,
+            style: tt.bodyLarge,
             textAlign: TextAlign.center,
           )
               .animate()
               .fade(duration: 300.ms, delay: 250.ms)
               .slideY(begin: 0.2, end: 0),
-          SizedBox(height: Tokens.spaceXl),
+          const SizedBox(height: Tokens.spaceXl),
           PSNCard(
-            glowColor: Tokens.accent,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   'JRE #2100 · 34:12 – 44:12',
-                  style: Tokens.bodyS.copyWith(color: Tokens.textMuted),
+                  style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
                 ),
                 const SizedBox(height: Tokens.spaceSm),
                 for (var i = 0; i < bullets.length; i++)
@@ -512,10 +546,10 @@ class _SummaryPage extends StatelessWidget {
               ],
             ),
           ),
-          SizedBox(height: Tokens.spaceMd),
+          const SizedBox(height: Tokens.spaceMd),
           Text(
-            '🔒 No microphone used. Only reads system Now Playing metadata.',
-            style: Tokens.bodyS.copyWith(color: Tokens.textMuted),
+            'No microphone used. Only reads system Now Playing metadata.',
+            style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
             textAlign: TextAlign.center,
           ),
         ],
@@ -537,6 +571,8 @@ class _SummaryBullet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     final number = (index + 1).toString();
 
     return Padding(
@@ -545,16 +581,19 @@ class _SummaryBullet extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            width: 18,
-            height: 18,
+            width: 22,
+            height: 22,
             decoration: BoxDecoration(
-              color: Tokens.accentDim,
+              color: cs.primaryContainer,
               borderRadius: BorderRadius.circular(Tokens.radiusFull),
             ),
             child: Center(
               child: Text(
                 number,
-                style: Tokens.bodyS.copyWith(color: Tokens.accent),
+                style: tt.labelSmall?.copyWith(
+                  color: cs.primary,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ),
@@ -562,7 +601,7 @@ class _SummaryBullet extends StatelessWidget {
           Expanded(
             child: Text(
               text,
-              style: Tokens.bodyM.copyWith(color: Tokens.textSecond),
+              style: tt.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
             ),
           ),
         ],
@@ -574,40 +613,30 @@ class _SummaryBullet extends StatelessWidget {
   }
 }
 
-// ── Shared helpers ──────────────────────────────────────────────────────
-
-class _GlowingEmojiCircle extends StatelessWidget {
-  const _GlowingEmojiCircle({
-    required this.emoji,
-    required this.glowColor,
+class _HeroCircle extends StatelessWidget {
+  const _HeroCircle({
+    required this.child,
+    this.useTertiary = false,
   });
 
-  final String emoji;
-  final Color glowColor;
+  final Widget child;
+  final bool useTertiary;
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final fill = useTertiary ? cs.tertiaryContainer : cs.primaryContainer;
+    final border = useTertiary ? cs.tertiary : cs.primary;
+
     return Container(
       width: 120,
       height: 120,
       decoration: BoxDecoration(
-        color: Tokens.accentDim,
-        borderRadius: BorderRadius.circular(Tokens.radiusFull),
-        border: Border.all(color: Tokens.accentBorder, width: 1),
-        boxShadow: [
-          BoxShadow(
-            color: glowColor.withValues(alpha: 0.6),
-            blurRadius: 40,
-            spreadRadius: 0,
-          ),
-        ],
+        color: fill,
+        shape: BoxShape.circle,
+        border: Border.all(color: border.withValues(alpha: 0.25)),
       ),
-      child: Center(
-        child: Text(
-          emoji,
-          style: const TextStyle(fontSize: 48),
-        ),
-      ),
+      child: Center(child: child),
     );
   }
 }

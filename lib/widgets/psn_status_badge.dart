@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../core/tokens.dart';
 import '../models/summary_style.dart';
@@ -13,14 +12,16 @@ class PSNStatusBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final config = _configFor(status);
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final config = _configFor(status, cs);
 
     return Container(
-      height: 24,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      constraints: const BoxConstraints(minHeight: Tokens.minTap / 2),
+      padding: const EdgeInsets.symmetric(horizontal: Tokens.spaceSm),
       decoration: BoxDecoration(
         color: config.bg,
-        borderRadius: BorderRadius.circular(Tokens.radiusFull),
+        borderRadius: BorderRadius.circular(Tokens.radiusLg),
         border: Border.all(color: config.border, width: 1),
       ),
       child: Row(
@@ -35,15 +36,14 @@ class PSNStatusBadge extends StatelessWidget {
                 color: config.fg,
               ),
             ),
-            const SizedBox(width: 5),
+            const SizedBox(width: 6),
           ],
           Text(
             config.label,
-            style: GoogleFonts.dmSans(
-              fontSize: 11,
+            style: tt.labelSmall?.copyWith(
               fontWeight: FontWeight.w600,
               color: config.fg,
-              height: 1,
+              height: 1.1,
             ),
           ),
         ],
@@ -51,35 +51,36 @@ class PSNStatusBadge extends StatelessWidget {
     );
   }
 
-  static _BadgeConfig _configFor(SessionStatus status) => switch (status) {
+  static _BadgeConfig _configFor(SessionStatus status, ColorScheme cs) =>
+      switch (status) {
         SessionStatus.recording => _BadgeConfig(
-            bg: Tokens.errorDim,
-            border: Tokens.error,
-            fg: Tokens.error,
-            label: '● Recording',
+            bg: cs.errorContainer,
+            border: cs.error,
+            fg: cs.onErrorContainer,
+            label: 'Recording',
           ),
         SessionStatus.queued => _BadgeConfig(
-            bg: Tokens.bgElevated,
-            border: Tokens.borderLight,
-            fg: Tokens.textMuted,
+            bg: cs.surfaceContainerHighest,
+            border: cs.outlineVariant,
+            fg: cs.onSurfaceVariant,
             label: 'Queued',
           ),
         SessionStatus.summarizing => _BadgeConfig(
-            bg: Tokens.accentDim,
-            border: Tokens.accentBorder,
-            fg: Tokens.accent,
+            bg: cs.primaryContainer,
+            border: cs.primary,
+            fg: cs.onPrimaryContainer,
             label: 'Summarizing…',
           ),
         SessionStatus.done => _BadgeConfig(
-            bg: Tokens.successDim,
-            border: Tokens.success.withValues(alpha: 0.3),
-            fg: Tokens.success,
+            bg: cs.tertiaryContainer,
+            border: cs.tertiary,
+            fg: cs.onTertiaryContainer,
             label: 'Done',
           ),
         SessionStatus.error => _BadgeConfig(
-            bg: Tokens.errorDim,
-            border: Tokens.error.withValues(alpha: 0.3),
-            fg: Tokens.error,
+            bg: cs.errorContainer,
+            border: cs.error,
+            fg: cs.onErrorContainer,
             label: 'Failed',
           ),
       };

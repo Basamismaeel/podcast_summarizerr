@@ -18,36 +18,50 @@ class SettingsTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: Tokens.spaceMd,
-          vertical: 14,
-        ),
-        decoration: const BoxDecoration(
-          border: Border(
-            bottom: BorderSide(color: Tokens.borderSubtle, width: 1),
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: Tokens.spaceMd,
+            vertical: Tokens.spaceSm,
           ),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: Tokens.bodyL.copyWith(color: Tokens.textPrimary)),
-                  if (subtitle != null) ...[
-                    const SizedBox(height: 2),
-                    Text(subtitle!, style: Tokens.bodyS.copyWith(color: Tokens.textMuted)),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: tt.bodyLarge?.copyWith(color: cs.onSurface),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle!,
+                        style: tt.bodySmall?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-            if (trailing != null) trailing!
-            else if (onTap != null)
-              const Icon(Icons.chevron_right, color: Tokens.textMuted, size: 20),
-          ],
+              if (trailing != null)
+                trailing!
+              else if (onTap != null)
+                Icon(
+                  Icons.chevron_right,
+                  color: cs.onSurfaceVariant,
+                  size: 22,
+                ),
+            ],
+          ),
         ),
       ),
     );

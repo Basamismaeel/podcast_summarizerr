@@ -6,6 +6,7 @@ import '../../providers/settings_provider.dart';
 import '../../services/notification_service.dart';
 import '../../services/now_playing_banner_coordinator.dart';
 import 'spotify_credentials_sheet.dart';
+import 'widgets/appearance_settings_section.dart';
 import 'widgets/settings_section.dart';
 import 'widgets/settings_tile.dart';
 
@@ -16,21 +17,32 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsProvider);
 
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
+      backgroundColor: cs.surface,
       appBar: AppBar(
         title: const Text('Settings'),
-        leading: const BackButton(),
+        automaticallyImplyLeading: false,
+        backgroundColor: cs.surface,
+        surfaceTintColor: Colors.transparent,
       ),
       body: ListView(
-        padding: const EdgeInsets.all(Tokens.spaceMd),
+        padding: const EdgeInsets.fromLTRB(
+          Tokens.spaceMd,
+          Tokens.spaceMd,
+          Tokens.spaceMd,
+          Tokens.spaceXl,
+        ),
         children: [
+          const AppearanceSettingsSection(),
+          const SizedBox(height: Tokens.spaceLg),
           const SettingsSection(title: 'Capture'),
           SettingsTile(
             title: 'Now Playing Banner',
             subtitle: 'Shows a quick-save button in your notifications',
             trailing: Switch.adaptive(
               value: settings.bannerEnabled,
-              activeTrackColor: Tokens.accent,
               onChanged: (v) async {
                 if (v) {
                   final granted =
@@ -51,7 +63,6 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: 'Shake your phone while listening',
             trailing: Switch.adaptive(
               value: settings.shakeEnabled,
-              activeTrackColor: Tokens.accent,
               onChanged: (v) =>
                   ref.read(settingsProvider.notifier).setShakeEnabled(v),
             ),
@@ -61,7 +72,6 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: 'Show persistent capture notification',
             trailing: Switch.adaptive(
               value: settings.notificationsEnabled,
-              activeTrackColor: Tokens.accent,
               onChanged: (v) => ref
                   .read(settingsProvider.notifier)
                   .setNotificationsEnabled(v),
@@ -72,7 +82,6 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: 'Vibrate on save',
             trailing: Switch.adaptive(
               value: settings.hapticFeedback,
-              activeTrackColor: Tokens.accent,
               onChanged: (v) =>
                   ref.read(settingsProvider.notifier).setHapticFeedback(v),
             ),

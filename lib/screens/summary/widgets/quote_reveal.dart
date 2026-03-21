@@ -16,25 +16,28 @@ class QuoteReveal extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return PSNCard(
-      glowColor: Tokens.accent,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             '"',
-            style: Tokens.headingXL.copyWith(
-              color: Tokens.accent,
+            style: tt.displaySmall?.copyWith(
+              color: cs.primary,
               height: 0.8,
+              fontWeight: FontWeight.w600,
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: Tokens.spaceSm),
           Expanded(
             child: Text(
               quote,
-              style: Tokens.bodyL.copyWith(
+              style: tt.bodyLarge?.copyWith(
                 fontStyle: FontStyle.italic,
-                color: Tokens.textPrimary,
+                color: cs.onSurface,
               ),
             ),
           ),
@@ -42,7 +45,12 @@ class QuoteReveal extends StatelessWidget {
       ),
     )
         .animate(delay: delay)
-        .fadeIn(duration: 400.ms)
-        .slideY(begin: 0.1, end: 0, duration: 400.ms);
+        .fadeIn(duration: 400.ms, curve: Curves.easeOutCubic)
+        .slideY(
+          begin: 0.1,
+          end: 0,
+          duration: 400.ms,
+          curve: Curves.easeOutCubic,
+        );
   }
 }

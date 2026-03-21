@@ -10,6 +10,9 @@ class AuthScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Sign In'),
@@ -21,11 +24,14 @@ class AuthScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const SizedBox(height: Tokens.spaceXl),
-            Text('Welcome back', style: Tokens.headingXL),
+            Text(
+              'Welcome back',
+              style: tt.displaySmall?.copyWith(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: Tokens.spaceSm),
             Text(
               'Sign in to sync your sessions across devices.',
-              style: Tokens.bodyL,
+              style: tt.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
             ),
             const SizedBox(height: Tokens.spaceXl),
             PSNTextField(
@@ -52,7 +58,7 @@ class AuthScreen extends StatelessWidget {
               label: 'Continue with Apple',
               variant: ButtonVariant.secondary,
               fullWidth: true,
-              icon: const Icon(Icons.apple, color: Colors.white, size: 20),
+              icon: Icon(Icons.apple, color: cs.onSurface, size: 22),
               onTap: () {
                 // TODO: implement Apple sign in
               },

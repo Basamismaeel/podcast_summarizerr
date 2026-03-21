@@ -15,6 +15,9 @@ class BulletCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return PSNCard(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -23,14 +26,14 @@ class BulletCard extends StatelessWidget {
             width: 24,
             height: 24,
             decoration: BoxDecoration(
-              color: Tokens.accentDim,
+              color: cs.primaryContainer,
               borderRadius: BorderRadius.circular(Tokens.radiusSm),
             ),
             child: Center(
               child: Text(
                 '${index + 1}',
-                style: Tokens.bodyS.copyWith(
-                  color: Tokens.accent,
+                style: tt.labelMedium?.copyWith(
+                  color: cs.primary,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -38,7 +41,10 @@ class BulletCard extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(text, style: Tokens.bodyL),
+            child: Text(
+              text,
+              style: tt.bodyLarge,
+            ),
           ),
         ],
       ),

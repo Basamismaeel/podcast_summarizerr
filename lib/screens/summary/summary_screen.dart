@@ -2,10 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../core/haptics.dart';
 import '../../core/tokens.dart';
+import '../../database/database.dart';
 import '../../models/summary_style.dart';
 import '../../providers/session_provider.dart';
+import '../../widgets/confirm_delete_session_sheet.dart';
 import '../../widgets/psn_skeleton.dart';
 
 class SummaryScreen extends ConsumerStatefulWidget {
@@ -34,17 +38,49 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen> {
     super.dispose();
   }
 
+  Future<void> _deleteMoment(BuildContext context, ListeningSession session) async {
+    higLightTap();
+    final ok = await showConfirmDeleteSessionSheet(context, session.title);
+    if (ok != true || !context.mounted) return;
+    await ref.read(sessionDaoProvider).deleteSession(session.id);
+    ref.invalidate(sessionByIdProvider(widget.sessionId));
+    ref.invalidate(allSessionsProvider);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Removed “${session.title}”'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    context.pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final sessionAsync = ref.watch(sessionByIdProvider(widget.sessionId));
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    final deleteActions = <Widget>[
+      ...switch (sessionAsync) {
+        AsyncData(:final value) when value != null => [
+            IconButton(
+              icon: const Icon(Icons.delete_outline_rounded),
+              tooltip: 'Delete summary',
+              color: cs.error,
+              onPressed: () => _deleteMoment(context, value),
+            ),
+          ],
+        _ => <Widget>[],
+      },
+    ];
 
     return Scaffold(
-      backgroundColor: Tokens.bgPrimary,
+      backgroundColor: cs.surface,
       appBar: AppBar(
         title: const Text('Summary'),
         leading: const BackButton(),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
+        actions: deleteActions,
       ),
       body: sessionAsync.when(
         loading: () => const Padding(
@@ -80,21 +116,25 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen> {
               Tokens.spaceXl,
             ),
             children: [
-              // ── Episode header ─────────────────────────────
-              Text(session.title, style: Tokens.headingL),
-              const SizedBox(height: 4),
-              Text(session.artist, style: Tokens.bodyM),
+              Text(
+                session.title,
+                style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: Tokens.spaceXs),
+              Text(
+                session.artist,
+                style: tt.bodyLarge,
+              ),
               if (session.rangeLabel != null) ...[
-                const SizedBox(height: 4),
+                const SizedBox(height: Tokens.spaceXs),
                 Text(
                   session.rangeLabel!,
-                  style: Tokens.bodyS.copyWith(color: Tokens.accent),
+                  style: tt.bodyMedium?.copyWith(color: cs.primary),
                 ),
               ],
 
               const SizedBox(height: Tokens.spaceLg),
 
-              // ── Status banner ──────────────────────────────
               if (status == SessionStatus.queued ||
                   status == SessionStatus.summarizing)
                 _StatusCard(status: status),
@@ -112,7 +152,6 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen> {
                   },
                 ),
 
-              // ── Summary content ────────────────────────────
               if (status == SessionStatus.done && bullets.isNotEmpty) ...[
                 if (style != null) ...[
                   _SectionLabel(text: '${style.icon}  ${style.label}'),
@@ -135,7 +174,7 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen> {
                   padding: const EdgeInsets.only(top: Tokens.spaceLg),
                   child: Text(
                     'No summary content available.',
-                    style: Tokens.bodyL,
+                    style: tt.bodyLarge,
                   ),
                 ),
             ],
@@ -146,46 +185,43 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PRIVATE WIDGETS
-// ═══════════════════════════════════════════════════════════════════════════
-
 class _StatusCard extends StatelessWidget {
   const _StatusCard({required this.status});
   final SessionStatus status;
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     final isSummarizing = status == SessionStatus.summarizing;
     return Container(
       margin: const EdgeInsets.only(bottom: Tokens.spaceLg),
       padding: const EdgeInsets.all(Tokens.spaceMd),
       decoration: BoxDecoration(
-        color: Tokens.accentDim,
+        color: cs.primaryContainer,
         borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: Tokens.accentBorder),
+        border: Border.all(color: cs.primary.withValues(alpha: 0.35)),
       ),
       child: Row(
         children: [
           if (isSummarizing)
-            const SizedBox(
+            SizedBox(
               width: 20,
               height: 20,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: Tokens.accent,
+                color: cs.primary,
               ),
             )
           else
-            const Icon(Icons.hourglass_top_rounded,
-                color: Tokens.accent, size: 20),
-          const SizedBox(width: 12),
+            Icon(Icons.hourglass_top_rounded, color: cs.primary, size: 20),
+          const SizedBox(width: Tokens.spaceSm + 4),
           Expanded(
             child: Text(
               isSummarizing
                   ? 'Summarizing your podcast moment...'
                   : 'Queued — will start summarizing shortly',
-              style: Tokens.bodyM.copyWith(color: Tokens.textPrimary),
+              style: tt.bodyLarge?.copyWith(color: cs.onSurface),
             ),
           ),
         ],
@@ -201,44 +237,38 @@ class _ErrorCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     return Container(
       margin: const EdgeInsets.only(bottom: Tokens.spaceLg),
       padding: const EdgeInsets.all(Tokens.spaceMd),
       decoration: BoxDecoration(
-        color: Tokens.errorDim,
+        color: cs.errorContainer,
         borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: Tokens.error.withAlpha(100)),
+        border: Border.all(color: cs.error.withValues(alpha: 0.4)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.error_outline_rounded,
-                  color: Tokens.error, size: 20),
+              Icon(Icons.error_outline_rounded, color: cs.error, size: 20),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   message,
-                  style: Tokens.bodyM.copyWith(color: Tokens.textPrimary),
+                  style: tt.bodyLarge?.copyWith(color: cs.onSurface),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: Tokens.spaceSm + 4),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh_rounded, size: 18),
               label: const Text('Retry'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Tokens.textPrimary,
-                side: const BorderSide(color: Tokens.borderMedium),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(Tokens.radiusSm),
-                ),
-              ),
             ),
           ),
         ],
@@ -253,9 +283,15 @@ class _SectionLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     return Text(
       text.toUpperCase(),
-      style: Tokens.label.copyWith(color: Tokens.accent),
+      style: tt.labelLarge?.copyWith(
+        color: cs.primary,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0.6,
+      ),
     );
   }
 }
@@ -269,17 +305,19 @@ class _BulletCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     final match = _timestampRe.firstMatch(text);
     final timestamp = match?.group(1);
     final cleanText = match != null ? text.substring(match.end) : text;
 
     return Container(
       margin: const EdgeInsets.only(bottom: Tokens.spaceSm),
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(Tokens.spaceSm + 6),
       decoration: BoxDecoration(
-        color: Tokens.bgElevated,
+        color: cs.surfaceContainerLow,
         borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: Tokens.borderSubtle),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -290,45 +328,44 @@ class _BulletCard extends StatelessWidget {
                 width: 26,
                 height: 26,
                 decoration: BoxDecoration(
-                  color: Tokens.accentDim,
-                  borderRadius: BorderRadius.circular(8),
+                  color: cs.primaryContainer,
+                  borderRadius: BorderRadius.circular(Tokens.radiusSm),
                 ),
                 alignment: Alignment.center,
                 child: Text(
                   '$index',
-                  style: Tokens.bodyS.copyWith(
-                    color: Tokens.accent,
+                  style: tt.labelMedium?.copyWith(
+                    color: cs.primary,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
               if (timestamp != null) ...[
-                const SizedBox(height: 6),
+                const SizedBox(height: Tokens.spaceXs + 2),
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
-                    color: Tokens.accent.withAlpha(25),
-                    borderRadius: BorderRadius.circular(6),
+                    color: cs.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(Tokens.radiusXs + 2),
                   ),
                   child: Text(
                     timestamp,
-                    style: Tokens.bodyS.copyWith(
-                      color: Tokens.accent,
+                    style: tt.labelSmall?.copyWith(
+                      color: cs.primary,
                       fontWeight: FontWeight.w600,
-                      fontSize: 11,
                     ),
                   ),
                 ),
               ],
             ],
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: Tokens.spaceSm + 4),
           Expanded(
             child: Text(
               cleanText,
-              style: Tokens.bodyM.copyWith(
-                color: Tokens.textPrimary,
+              style: tt.bodyLarge?.copyWith(
+                color: cs.onSurface,
                 height: 1.5,
               ),
             ),
@@ -345,30 +382,33 @@ class _QuoteCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     return Container(
       margin: const EdgeInsets.only(bottom: Tokens.spaceSm),
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(Tokens.spaceSm + 6),
       decoration: BoxDecoration(
-        color: Tokens.bgElevated,
+        color: cs.surfaceContainerLow,
         borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: Tokens.borderSubtle),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             '"',
-            style: Tokens.headingL.copyWith(
-              color: Tokens.accent,
+            style: tt.headlineSmall?.copyWith(
+              color: cs.primary,
               height: 1,
+              fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               text,
-              style: Tokens.bodyM.copyWith(
-                color: Tokens.textPrimary,
+              style: tt.bodyLarge?.copyWith(
+                color: cs.onSurface,
                 fontStyle: FontStyle.italic,
                 height: 1.5,
               ),

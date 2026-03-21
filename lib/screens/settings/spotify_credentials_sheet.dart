@@ -22,11 +22,13 @@ Future<void> showSpotifyCredentialsSheet(BuildContext context) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Tokens.bgElevated,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHigh,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (ctx) {
+        final tt = Theme.of(ctx).textTheme;
+        final cs = Theme.of(ctx).colorScheme;
         return Padding(
           padding: EdgeInsets.only(
             left: Tokens.spaceMd,
@@ -40,15 +42,15 @@ Future<void> showSpotifyCredentialsSheet(BuildContext context) async {
             children: [
               Text(
                 'Spotify API (developer only)',
-                style: Tokens.headingL.copyWith(fontSize: 18),
+                style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: Tokens.spaceSm),
               Text(
                 'Normal users should not need this. For production, put Client ID '
                 'and Secret in your .env and ship a release build so everyone gets them.\n\n'
                 'Use this sheet only to test keys on a device without rebuilding, '
                 'or for your own debugging.',
-                style: Tokens.bodyS.copyWith(color: Tokens.textMuted),
+                style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
               ),
               const SizedBox(height: 16),
               TextField(

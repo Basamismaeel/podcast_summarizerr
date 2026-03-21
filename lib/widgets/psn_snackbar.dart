@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../core/tokens.dart';
 
@@ -58,8 +57,16 @@ class _PSNSnackbarState extends State<PSNSnackbar>
     _slide = Tween<Offset>(
       begin: const Offset(0, -1),
       end: Offset.zero,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
-    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
+    ).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: Tokens.springCurve,
+      ),
+    );
+    _fade = CurvedAnimation(
+      parent: _controller,
+      curve: Tokens.springCurve,
+    );
 
     _controller.forward();
     _autoDismiss = Timer(const Duration(seconds: 3), _dismiss);
@@ -78,26 +85,29 @@ class _PSNSnackbarState extends State<PSNSnackbar>
     widget.onDismiss();
   }
 
-  Color get _accentColor => switch (widget.type) {
-        PSNSnackbarType.success => Tokens.success,
-        PSNSnackbarType.error => Tokens.error,
-        PSNSnackbarType.info => Tokens.accent,
+  Color _accentColor(ColorScheme cs) => switch (widget.type) {
+        PSNSnackbarType.success => cs.tertiary,
+        PSNSnackbarType.error => cs.error,
+        PSNSnackbarType.info => cs.primary,
       };
 
   IconData get _icon => switch (widget.type) {
         PSNSnackbarType.success => Icons.check_circle_outline_rounded,
-        PSNSnackbarType.error => Icons.close_rounded,
+        PSNSnackbarType.error => Icons.error_outline_rounded,
         PSNSnackbarType.info => Icons.info_outline_rounded,
       };
 
   @override
   Widget build(BuildContext context) {
     final top = MediaQuery.of(context).padding.top;
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final accent = _accentColor(cs);
 
     return Positioned(
-      top: top + 8,
-      left: 16,
-      right: 16,
+      top: top + Tokens.spaceSm,
+      left: Tokens.spaceMd,
+      right: Tokens.spaceMd,
       child: SlideTransition(
         position: _slide,
         child: FadeTransition(
@@ -109,38 +119,41 @@ class _PSNSnackbarState extends State<PSNSnackbar>
                 _dismiss();
               }
             },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: BoxDecoration(
-                color: Tokens.bgSurface,
-                borderRadius: BorderRadius.circular(Tokens.radiusMd),
-                border: Border.all(color: Tokens.borderLight),
-                boxShadow: const [Tokens.cardShadow],
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 3,
-                    height: 32,
-                    margin: const EdgeInsets.only(right: 12),
-                    decoration: BoxDecoration(
-                      color: _accentColor,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  Icon(_icon, color: _accentColor, size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      widget.message,
-                      style: GoogleFonts.dmSans(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: Tokens.textPrimary,
+            child: Material(
+              elevation: 1,
+              shadowColor: Colors.black26,
+              color: cs.surfaceContainerHigh,
+              surfaceTintColor: Colors.transparent,
+              borderRadius: BorderRadius.circular(Tokens.radiusMd),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: Tokens.spaceMd,
+                  vertical: 14,
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 3,
+                      height: 32,
+                      margin: const EdgeInsets.only(right: Tokens.spaceSm),
+                      decoration: BoxDecoration(
+                        color: accent,
+                        borderRadius: BorderRadius.circular(2),
                       ),
                     ),
-                  ),
-                ],
+                    Icon(_icon, color: accent, size: 22),
+                    const SizedBox(width: Tokens.spaceSm),
+                    Expanded(
+                      child: Text(
+                        widget.message,
+                        style: tt.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w500,
+                          color: cs.onSurface,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

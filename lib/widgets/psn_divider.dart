@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../core/tokens.dart';
 
@@ -10,40 +9,33 @@ class PSNDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     if (label == null) {
-      return const Divider(
+      return Divider(
         height: 1,
         thickness: 1,
-        color: Tokens.borderSubtle,
+        color: cs.outlineVariant,
       );
     }
 
     return Row(
       children: [
-        const Expanded(child: _Line()),
+        Expanded(child: Divider(color: cs.outlineVariant, height: 1)),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          padding: const EdgeInsets.symmetric(horizontal: Tokens.spaceSm),
           child: Text(
             label!.toUpperCase(),
-            style: GoogleFonts.dmSans(
-              fontSize: 11,
+            style: tt.labelSmall?.copyWith(
               fontWeight: FontWeight.w600,
               letterSpacing: 1.2,
-              color: Tokens.textMuted,
+              color: cs.onSurfaceVariant,
             ),
           ),
         ),
-        const Expanded(child: _Line()),
+        Expanded(child: Divider(color: cs.outlineVariant, height: 1)),
       ],
     );
-  }
-}
-
-class _Line extends StatelessWidget {
-  const _Line();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(height: 1, color: Tokens.borderSubtle);
   }
 }

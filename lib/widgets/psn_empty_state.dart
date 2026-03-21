@@ -11,6 +11,7 @@ class PSNEmptyState extends StatelessWidget {
     this.action,
   });
 
+  /// Emoji or short string; uses [TextTheme.displaySmall] so it scales with Dynamic Type.
   final String icon;
   final String title;
   final String subtitle;
@@ -18,23 +19,30 @@ class PSNEmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+    final cs = Theme.of(context).colorScheme;
+
     return Center(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
+        padding: const EdgeInsets.symmetric(horizontal: Tokens.spaceXl),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(icon, style: const TextStyle(fontSize: 48)),
+            Text(
+              icon,
+              textAlign: TextAlign.center,
+              style: tt.displaySmall,
+            ),
             SizedBox(height: Tokens.spaceSm),
             Text(
               title,
-              style: Tokens.headingM,
+              style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w600),
               textAlign: TextAlign.center,
             ),
             SizedBox(height: Tokens.spaceSm),
             Text(
               subtitle,
-              style: Tokens.bodyM,
+              style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
               textAlign: TextAlign.center,
             ),
             if (action != null) ...[

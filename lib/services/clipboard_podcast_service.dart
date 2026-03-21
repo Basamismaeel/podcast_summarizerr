@@ -55,10 +55,21 @@ class ClipboardPodcastService {
 
   String? _lastProcessedUrl;
 
+  /// Reads the system clipboard when the app is in the foreground.
+  /// iOS + Android (Samsung, etc.): use after app resume or from an explicit
+  /// user action (e.g. "Paste link") so OEM clipboard policies are satisfied.
   Future<ClipboardPodcastInfo?> checkClipboard() async {
-    if (kIsWeb || !Platform.isIOS) return null;
+    if (kIsWeb) return null;
+    if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
+      return null;
+    }
 
     try {
+      // Some Android builds need a beat after resume before clip is visible.
+      if (Platform.isAndroid) {
+        await Future.delayed(const Duration(milliseconds: 350));
+      }
+
       ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
 
       if (data == null || (data.text?.trim().isEmpty ?? true)) {

@@ -29,15 +29,20 @@ class _ManualEntryScreenState extends ConsumerState<ManualEntryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Add Episode'),
+        title: const Text('Add episode'),
         leading: const BackButton(),
       ),
       body: ListView(
         padding: const EdgeInsets.all(Tokens.spaceMd),
         children: [
-          Text('What were you listening to?', style: Tokens.headingM),
+          Text(
+            'What were you listening to?',
+            style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+          ),
           const SizedBox(height: Tokens.spaceMd),
           PSNTextField(
             placeholder: 'Episode title',
@@ -49,11 +54,14 @@ class _ManualEntryScreenState extends ConsumerState<ManualEntryScreen> {
             controller: _artistController,
           ),
           const SizedBox(height: Tokens.spaceLg),
-          Text('Approximate time range', style: Tokens.headingS),
+          Text(
+            'Approximate time range',
+            style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+          ),
           const SizedBox(height: Tokens.spaceSm),
           Wrap(
-            spacing: 8,
-            runSpacing: 8,
+            spacing: Tokens.spaceSm,
+            runSpacing: Tokens.spaceSm,
             children: ['0–15 min', '15–30 min', '30–60 min', '60+ min']
                 .map((range) => _RangeChip(
                       label: range,
@@ -64,7 +72,7 @@ class _ManualEntryScreenState extends ConsumerState<ManualEntryScreen> {
           ),
           const SizedBox(height: Tokens.spaceXl),
           PSNButton(
-            label: 'Save & Summarize',
+            label: 'Save & summarize',
             fullWidth: true,
             onTap: _canSubmit ? _submit : null,
           ),
@@ -102,22 +110,30 @@ class _RangeChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(Tokens.radiusFull),
       child: AnimatedContainer(
         duration: Tokens.durationFast,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        curve: Tokens.springCurve,
+        padding: const EdgeInsets.symmetric(
+          horizontal: Tokens.spaceMd,
+          vertical: 10,
+        ),
         decoration: BoxDecoration(
-          color: selected ? Tokens.accentDim : Tokens.bgElevated,
+          color: selected ? cs.primaryContainer : cs.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(Tokens.radiusFull),
           border: Border.all(
-            color: selected ? Tokens.accent : Tokens.borderLight,
+            color: selected ? cs.primary : cs.outlineVariant,
           ),
         ),
         child: Text(
           label,
-          style: Tokens.bodyS.copyWith(
-            color: selected ? Tokens.accent : Tokens.textSecond,
+          style: tt.bodySmall?.copyWith(
+            color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
           ),
         ),

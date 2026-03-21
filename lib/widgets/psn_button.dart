@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
+import '../core/haptics.dart';
 import '../core/tokens.dart';
 
 enum ButtonVariant { primary, secondary, ghost, danger }
 
 enum ButtonSize { sm, md, lg }
 
-class PSNButton extends StatefulWidget {
+/// HIG-aligned buttons: Material 3, 44pt minimum touch target, system colors.
+class PSNButton extends StatelessWidget {
   const PSNButton({
     super.key,
     required this.label,
@@ -17,6 +18,7 @@ class PSNButton extends StatefulWidget {
     this.size = ButtonSize.md,
     this.icon,
     this.fullWidth = false,
+    this.semanticLabel,
   });
 
   final String label;
@@ -26,157 +28,127 @@ class PSNButton extends StatefulWidget {
   final ButtonSize size;
   final Widget? icon;
   final bool fullWidth;
+  /// Accessibility for icon-only usage.
+  final String? semanticLabel;
 
-  @override
-  State<PSNButton> createState() => _PSNButtonState();
-}
+  bool get _disabled => onTap == null || isLoading;
 
-class _PSNButtonState extends State<PSNButton>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late final Animation<double> _scale;
-  bool _pressed = false;
+  EdgeInsets get _pad => switch (size) {
+        ButtonSize.sm => const EdgeInsets.symmetric(horizontal: 12),
+        ButtonSize.md => const EdgeInsets.symmetric(horizontal: 16),
+        ButtonSize.lg => const EdgeInsets.symmetric(horizontal: 20),
+      };
 
-  bool get _disabled => widget.onTap == null || widget.isLoading;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 50),
-    );
-    _scale = Tween<double>(begin: 1.0, end: 0.97).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
+  void _handleTap() {
+    if (_disabled) return;
+    higLightTap();
+    onTap!();
   }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  double get _height => switch (widget.size) {
-        ButtonSize.sm => 36.0,
-        ButtonSize.md => 48.0,
-        ButtonSize.lg => 56.0,
-      };
-
-  EdgeInsets get _padding => switch (widget.size) {
-        ButtonSize.sm => const EdgeInsets.symmetric(horizontal: 16),
-        ButtonSize.md => const EdgeInsets.symmetric(horizontal: 20),
-        ButtonSize.lg => const EdgeInsets.symmetric(horizontal: 24),
-      };
-
-  double get _fontSize => switch (widget.size) {
-        ButtonSize.sm => 13.0,
-        ButtonSize.md => 15.0,
-        ButtonSize.lg => 16.0,
-      };
-
-  Color get _bg => switch (widget.variant) {
-        ButtonVariant.primary => Tokens.accent,
-        ButtonVariant.secondary => Tokens.bgElevated,
-        ButtonVariant.ghost => Colors.transparent,
-        ButtonVariant.danger => Tokens.errorDim,
-      };
-
-  Color get _pressedBg => switch (widget.variant) {
-        ButtonVariant.primary =>
-          HSLColor.fromColor(Tokens.accent).withLightness(0.38).toColor(),
-        ButtonVariant.secondary => Tokens.bgOverlay,
-        ButtonVariant.ghost => Tokens.bgElevated,
-        ButtonVariant.danger => Tokens.errorDim,
-      };
-
-  Color get _fg => switch (widget.variant) {
-        ButtonVariant.primary => Colors.white,
-        ButtonVariant.secondary => Colors.white,
-        ButtonVariant.ghost => Tokens.accent,
-        ButtonVariant.danger => Tokens.error,
-      };
-
-  BorderSide get _border => switch (widget.variant) {
-        ButtonVariant.primary => BorderSide.none,
-        ButtonVariant.secondary =>
-          const BorderSide(color: Tokens.borderMedium, width: 1),
-        ButtonVariant.ghost => BorderSide.none,
-        ButtonVariant.danger =>
-          BorderSide(color: Tokens.error.withValues(alpha: 0.3), width: 1),
-      };
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _scale,
-      builder: (context, child) {
-        return Transform.scale(
-          scale: _scale.value,
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    final child = isLoading
+        ? SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: variant == ButtonVariant.primary ||
+                      variant == ButtonVariant.danger
+                  ? cs.onPrimary
+                  : cs.primary,
+            ),
+          )
+        : Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (icon != null) ...[
+                IconTheme.merge(
+                  data: IconThemeData(size: 20),
+                  child: icon!,
+                ),
+                const SizedBox(width: Tokens.spaceSm),
+              ],
+              Text(
+                label,
+                style: tt.labelLarge?.copyWith(
+                  fontWeight: variant == ButtonVariant.ghost
+                      ? FontWeight.w400
+                      : FontWeight.w600,
+                ),
+              ),
+            ],
+          );
+
+    Widget button;
+    switch (variant) {
+      case ButtonVariant.primary:
+        button = FilledButton(
+          onPressed: _disabled ? null : _handleTap,
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(Tokens.minTap, Tokens.minTap),
+            padding: _pad,
+            backgroundColor: cs.primary,
+            foregroundColor: cs.onPrimary,
+          ),
           child: child,
         );
-      },
-      child: Opacity(
-        opacity: _disabled ? 0.4 : 1.0,
-        child: GestureDetector(
-          onTapDown: _disabled ? null : (_) => _onPressDown(),
-          onTapUp: _disabled ? null : (_) => _onPressUp(),
-          onTapCancel: _disabled ? null : _onPressUp,
-          onTap: _disabled ? null : widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 50),
-            height: _height,
-            padding: _padding,
-            constraints: widget.fullWidth
-                ? const BoxConstraints(minWidth: double.infinity)
-                : null,
-            decoration: BoxDecoration(
-              color: _pressed ? _pressedBg : _bg,
-              borderRadius: BorderRadius.circular(Tokens.radiusMd),
-              border: Border.fromBorderSide(_border),
-            ),
-            child: Center(
-              widthFactor: widget.fullWidth ? null : 1.0,
-              child: widget.isLoading
-                  ? SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: _fg,
-                      ),
-                    )
-                  : Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (widget.icon != null) ...[
-                          widget.icon!,
-                          const SizedBox(width: 8),
-                        ],
-                        Text(
-                          widget.label,
-                          style: GoogleFonts.dmSans(
-                            fontSize: _fontSize,
-                            fontWeight: FontWeight.w600,
-                            color: _fg,
-                          ),
-                        ),
-                      ],
-                    ),
-            ),
+        break;
+      case ButtonVariant.secondary:
+        button = OutlinedButton(
+          onPressed: _disabled ? null : _handleTap,
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(Tokens.minTap, Tokens.minTap),
+            padding: _pad,
+            foregroundColor: cs.primary,
+            side: BorderSide(color: cs.outline),
           ),
-        ),
-      ),
-    );
-  }
+          child: child,
+        );
+        break;
+      case ButtonVariant.ghost:
+        button = TextButton(
+          onPressed: _disabled ? null : _handleTap,
+          style: TextButton.styleFrom(
+            minimumSize: const Size(Tokens.minTap, Tokens.minTap),
+            padding: _pad,
+            foregroundColor: cs.primary,
+          ),
+          child: child,
+        );
+        break;
+      case ButtonVariant.danger:
+        button = FilledButton(
+          onPressed: _disabled ? null : _handleTap,
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(Tokens.minTap, Tokens.minTap),
+            padding: _pad,
+            backgroundColor: cs.error,
+            foregroundColor: cs.onError,
+          ),
+          child: child,
+        );
+        break;
+    }
 
-  void _onPressDown() {
-    setState(() => _pressed = true);
-    _controller.forward();
-  }
+    if (semanticLabel != null) {
+      button = Semantics(
+        button: true,
+        label: semanticLabel,
+        child: button,
+      );
+    }
 
-  void _onPressUp() {
-    setState(() => _pressed = false);
-    _controller.reverse();
+    if (fullWidth) {
+      return SizedBox(
+        width: double.infinity,
+        child: button,
+      );
+    }
+    return button;
   }
 }

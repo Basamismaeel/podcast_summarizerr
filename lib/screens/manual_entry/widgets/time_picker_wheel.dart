@@ -44,6 +44,8 @@ class _TimePickerWheelState extends State<TimePickerWheel> {
 
   @override
   Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+
     return SizedBox(
       height: 160,
       child: Row(
@@ -58,8 +60,11 @@ class _TimePickerWheelState extends State<TimePickerWheel> {
             },
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Text(':', style: Tokens.headingL),
+            padding: const EdgeInsets.symmetric(horizontal: Tokens.spaceSm),
+            child: Text(
+              ':',
+              style: tt.headlineMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
           ),
           _wheel(
             controller: _secondController,
@@ -79,6 +84,8 @@ class _TimePickerWheelState extends State<TimePickerWheel> {
     required int itemCount,
     required ValueChanged<int> onChanged,
   }) {
+    final tt = Theme.of(context).textTheme;
+
     return SizedBox(
       width: 64,
       child: ListWheelScrollView.useDelegate(
@@ -91,7 +98,10 @@ class _TimePickerWheelState extends State<TimePickerWheel> {
           builder: (context, index) => Center(
             child: Text(
               index.toString().padLeft(2, '0'),
-              style: Tokens.headingL.copyWith(color: Tokens.textPrimary),
+              style: tt.headlineMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurface,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
         ),

@@ -1,11 +1,10 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/tokens.dart';
 import '../../../database/database.dart';
 import 'podcast_artwork.dart';
 
-/// Slim “now playing” style bar when a session is summarizing (above bottom nav).
+/// Slim bar when a session is summarizing (above bottom nav).
 class SummarizingMiniBar extends StatelessWidget {
   const SummarizingMiniBar({
     super.key,
@@ -16,27 +15,28 @@ class SummarizingMiniBar extends StatelessWidget {
   final ListeningSession session;
   final VoidCallback? onTap;
 
-  static const _barBg = Color(0xFF1C1C1E);
-
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return Material(
-      color: _barBg,
+      color: cs.surfaceContainerHigh,
       child: InkWell(
         onTap: onTap,
         child: SizedBox(
           height: 64,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: Tokens.spaceSm + 4),
             child: Row(
               children: [
                 PodcastArtwork(
                   imageUrl: session.artworkUrl,
                   labelForInitials: session.artist,
                   size: 40,
-                  borderRadius: 8,
+                  borderRadius: Tokens.radiusSm,
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: Tokens.spaceSm + 4),
                 Expanded(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -44,40 +44,28 @@ class SummarizingMiniBar extends StatelessWidget {
                     children: [
                       Text(
                         'Summarizing…',
-                        style: TextStyle(
-                          fontSize: 11,
+                        style: tt.labelLarge?.copyWith(
                           fontWeight: FontWeight.w500,
-                          color: Tokens.accent,
-                          fontFamily: !kIsWeb &&
-                                  defaultTargetPlatform == TargetPlatform.iOS
-                              ? '.SF Pro Text'
-                              : null,
+                          color: cs.primary,
                         ),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         session.title,
-                        style: TextStyle(
-                          fontSize: 15,
+                        style: tt.titleMedium?.copyWith(
                           fontWeight: FontWeight.w600,
-                          color: Colors.white,
-                          fontFamily: !kIsWeb &&
-                                  defaultTargetPlatform == TargetPlatform.iOS
-                              ? '.SF Pro Text'
-                              : null,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                       const SizedBox(height: 6),
                       ClipRRect(
-                        borderRadius: BorderRadius.circular(1.5),
-                        child: const SizedBox(
+                        borderRadius: BorderRadius.circular(2),
+                        child: SizedBox(
                           height: 3,
                           child: LinearProgressIndicator(
-                            backgroundColor: Color(0xFF3A3A3C),
-                            valueColor:
-                                AlwaysStoppedAnimation<Color>(Tokens.accent),
+                            backgroundColor: cs.surfaceContainerHighest,
+                            valueColor: AlwaysStoppedAnimation<Color>(cs.primary),
                             minHeight: 3,
                           ),
                         ),

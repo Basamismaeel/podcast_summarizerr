@@ -16,40 +16,46 @@ class EpisodeListItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return PSNCard(
       onTap: onTap,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      padding: const EdgeInsets.symmetric(
+        horizontal: Tokens.spaceSm + 4,
+        vertical: 10,
+      ),
       child: Row(
         children: [
           Container(
-            width: 44,
-            height: 44,
+            width: Tokens.minTap,
+            height: Tokens.minTap,
             decoration: BoxDecoration(
-              color: Tokens.bgElevated,
+              color: cs.surfaceContainerHighest,
               borderRadius: BorderRadius.circular(Tokens.radiusSm),
             ),
-            child: const Icon(Icons.podcasts, color: Tokens.accent, size: 22),
+            child: Icon(Icons.podcasts, color: cs.primary, size: 22),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: Tokens.spaceSm + 4),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   episode.title,
-                  style: Tokens.headingS,
+                  style: tt.titleSmall?.copyWith(fontWeight: FontWeight.w600),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
                 Text(
                   episode.podcastName,
-                  style: Tokens.bodyS.copyWith(color: Tokens.textMuted),
+                  style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
                 ),
               ],
             ),
           ),
-          const Icon(Icons.chevron_right, color: Tokens.textMuted, size: 20),
+          Icon(Icons.chevron_right, color: cs.onSurfaceVariant, size: 20),
         ],
       ),
     );

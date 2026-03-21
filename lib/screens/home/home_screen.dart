@@ -1,13 +1,12 @@
 import 'dart:async';
 
-import 'package:drift/drift.dart' show Value;
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shimmer/shimmer.dart';
 
+import '../../core/haptics.dart';
 import '../../core/tokens.dart';
 import '../../database/database.dart';
 import '../../models/summary_style.dart';
@@ -17,60 +16,19 @@ import '../../services/notification_service.dart';
 import '../../services/now_playing_banner_coordinator.dart';
 import '../../services/now_playing_service.dart';
 import '../../services/siri_service.dart';
+import '../../widgets/confirm_delete_session_sheet.dart';
 import '../../widgets/psn_bottom_sheet.dart';
 import '../../widgets/psn_button.dart';
 import '../../widgets/psn_empty_state.dart';
 import 'widgets/recording_indicator.dart';
 import 'widgets/session_card.dart';
-import 'widgets/summarizing_mini_bar.dart';
 
-// Apple Podcasts–style home chrome (true black OLED, system-adjacent type on iOS).
-const _kAppleBlack = Color(0xFF000000);
-const _kAppleNavBg = Color(0xFF1C1C1E);
-const _kEdgePadding = 20.0;
+const _kEdgePadding = Tokens.spaceMd;
 const _kCardSpacing = 12.0;
-const _kFabAccent = Color(0xFF6366F1);
+/// Pre-build off-screen rows for smoother fling on long lists.
+const _kScrollCacheExtent = 400.0;
 
-ListeningSession? _firstSummarizingSession(List<ListeningSession> sessions) {
-  for (final s in sessions) {
-    if (SessionStatus.fromJson(s.status) == SessionStatus.summarizing) {
-      return s;
-    }
-  }
-  return null;
-}
-
-TextStyle _appleSectionHeader(BuildContext context) {
-  final useSf = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
-  return TextStyle(
-    fontFamily: useSf ? '.SF Pro Text' : null,
-    fontSize: 22,
-    fontWeight: FontWeight.bold,
-    color: Colors.white,
-    letterSpacing: useSf ? -0.4 : -0.2,
-  );
-}
-
-TextStyle _appleAppBarTitle(BuildContext context, {required bool collapsed}) {
-  final useSf = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
-  return TextStyle(
-    fontFamily: useSf ? '.SF Pro Text' : null,
-    fontSize: collapsed ? 17 : 34,
-    fontWeight: collapsed ? FontWeight.w600 : FontWeight.bold,
-    color: Colors.white,
-    letterSpacing: collapsed ? 0 : -0.5,
-  );
-}
-
-TextStyle _appleSubtitle(BuildContext context) {
-  final useSf = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
-  return TextStyle(
-    fontFamily: useSf ? '.SF Pro Text' : null,
-    fontSize: 15,
-    fontWeight: FontWeight.w400,
-    color: const Color(0xFF8E8E93),
-  );
-}
+enum _MomentFilter { all, inProgress, ready }
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -82,6 +40,9 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   Timer? _bannerPollTimer;
+  _MomentFilter _momentFilter = _MomentFilter.all;
+  bool _selectionMode = false;
+  final Set<String> _selectedSessionIds = {};
 
   Future<void> _ingestSiriPendingSessions() async {
     final pending = await SiriService.getPendingSessions();
@@ -102,9 +63,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
-  Future<void> _checkClipboardForPodcast() async {
+  Future<void> _checkClipboardForPodcast({bool userInitiated = false}) async {
     final info = await ClipboardPodcastService.instance.checkClipboard();
-    if (info == null || !mounted) return;
+    if (info == null || !mounted) {
+      if (userInitiated && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'No podcast link on the clipboard. In Spotify: Share → Copy link, '
+              'then open this app and tap “Paste copied link” here (or ⋯ → Paste copied link).',
+            ),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+      return;
+    }
 
     // Unsupported sources — show a message and bail.
     if (!info.supportsPipeline) {
@@ -162,9 +137,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           SnackBar(
             content: Text(
               'Saved "${info.episodeTitle}" (${_formatRangeTimestamp(range.start)} – ${_formatRangeTimestamp(range.end)})',
-              style: const TextStyle(color: Colors.white),
             ),
-            backgroundColor: _kFabAccent,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 3),
           ),
@@ -208,6 +181,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               setModalState(() {});
             }
 
+            final sheetCs = Theme.of(ctx).colorScheme;
+            final sheetTt = Theme.of(ctx).textTheme;
             return PSNBottomSheet(
               title: 'Save moment range?',
               child: SingleChildScrollView(
@@ -216,10 +191,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      padding: const EdgeInsets.all(14),
+                      padding: const EdgeInsets.all(Tokens.spaceSm + 6),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF2C2C2E),
-                        borderRadius: BorderRadius.circular(12),
+                        color: sheetCs.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(Tokens.radiusMd),
                       ),
                       child: Row(
                         children: [
@@ -227,25 +202,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                             width: 48,
                             height: 48,
                             decoration: BoxDecoration(
-                              color: _kFabAccent.withValues(alpha: 0.2),
-                              borderRadius: BorderRadius.circular(10),
+                              color: sheetCs.primaryContainer,
+                              borderRadius: BorderRadius.circular(Tokens.radiusSm),
                             ),
-                            child: const Icon(
-                              Icons.podcasts,
-                              color: _kFabAccent,
+                            child: Icon(
+                              Icons.podcasts_rounded,
+                              color: sheetCs.primary,
                               size: 26,
                             ),
                           ),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: Tokens.spaceSm + 4),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
                                   info.episodeTitle,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
+                                  style: sheetTt.titleMedium?.copyWith(
                                     fontWeight: FontWeight.w600,
                                   ),
                                   maxLines: 2,
@@ -255,9 +228,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                   const SizedBox(height: 3),
                                   Text(
                                     info.podcastName,
-                                    style: const TextStyle(
-                                      color: Color(0xFF8E8E93),
-                                      fontSize: 14,
+                                    style: sheetTt.bodyMedium?.copyWith(
+                                      color: sheetCs.onSurfaceVariant,
                                     ),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
@@ -266,10 +238,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                 const SizedBox(height: 3),
                                 Text(
                                   '${_formatRangeTimestamp(start)} – ${_formatRangeTimestamp(end)}',
-                                  style: const TextStyle(
-                                    color: _kFabAccent,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w500,
+                                  style: sheetTt.bodyMedium?.copyWith(
+                                    color: sheetCs.primary,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ],
@@ -279,12 +250,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       ),
                     ),
 
-                    const SizedBox(height: 10),
+                    const SizedBox(height: Tokens.spaceSm + 2),
                     Text(
                       'Choose start and end times (from clipboard start).',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.55),
-                        fontSize: 13,
+                      style: sheetTt.bodySmall?.copyWith(
+                        color: sheetCs.onSurfaceVariant,
                       ),
                     ),
 
@@ -318,13 +288,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       const SizedBox(height: 6),
                       Text(
                         errorText,
-                        style: const TextStyle(color: Colors.redAccent),
+                        style: sheetTt.bodySmall?.copyWith(
+                          color: sheetCs.error,
+                        ),
                       ),
                     ],
 
                     const SizedBox(height: Tokens.spaceLg),
                     PSNButton(
-                      label: '🔖 Save Range',
+                      label: 'Save range',
+                      icon: const Icon(Icons.bookmark_rounded, size: 20),
                       fullWidth: true,
                       onTap: () {
                         if (end <= start) {
@@ -354,18 +327,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Future<void> _fetchAndShowNowPlayingBanner() async {
-    // ignore: avoid_print
-    print('[Banner] Attempting to show banner');
     final info = await NowPlayingService.instance.getCurrentNowPlaying();
-    // ignore: avoid_print
-    print('[Banner] NowPlaying result: $info');
     if (info != null) {
       await NotificationService.instance.showNowPlayingBanner(
         info.title,
         info.artist,
       );
-      // ignore: avoid_print
-      print('[Banner] Banner shown successfully');
     }
   }
 
@@ -382,35 +349,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     });
 
     _bannerPollTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
-      // ignore: avoid_print
-      print('[Banner] Attempting to show banner');
       final info = await NowPlayingService.instance.getCurrentNowPlaying();
-      // ignore: avoid_print
-      print('[Banner] NowPlaying result: $info');
       if (info != null) {
         await NotificationService.instance.updateBanner(info.title, info.artist);
-        // ignore: avoid_print
-        print('[Banner] Banner shown successfully');
       }
     });
 
-    Future.delayed(const Duration(seconds: 3), () async {
-      // ignore: avoid_print
-      print('[Banner] Attempting to show banner');
-      // ignore: avoid_print
-      print('[Banner] NowPlaying result: null (3s test — hardcoded episode)');
-      await NotificationService.instance.showNowPlayingBanner(
-        'Test Episode',
-        'Test Podcast',
-      );
-      // ignore: avoid_print
-      print('[Banner] Banner shown successfully');
-    });
-
     Future.delayed(const Duration(seconds: 2), () async {
-      final status = await Permission.notification.request();
-      // ignore: avoid_print
-      print('Notification permission: $status');
+      await Permission.notification.request();
     });
   }
 
@@ -430,52 +376,114 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
-  double _fabBottomInset(bool showMiniBar) {
-    final viewPadding = MediaQuery.paddingOf(context).bottom;
-    const navH = 60.0;
-    final miniH = showMiniBar ? 64.0 : 0.0;
-    return viewPadding + navH + miniH + 12;
+  void _exitSelectionMode() {
+    setState(() {
+      _selectionMode = false;
+      _selectedSessionIds.clear();
+    });
+  }
+
+  void _toggleSessionSelection(String id) {
+    setState(() {
+      if (_selectedSessionIds.contains(id)) {
+        _selectedSessionIds.remove(id);
+      } else {
+        _selectedSessionIds.add(id);
+      }
+    });
+  }
+
+  Future<void> _deleteSelectedSessions(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final n = _selectedSessionIds.length;
+    if (n == 0) return;
+    higLightTap();
+    final ok = await showConfirmDeleteMultipleSessionsSheet(context, count: n);
+    if (ok != true || !context.mounted) return;
+    final ids = List<String>.from(_selectedSessionIds);
+    final dao = ref.read(sessionDaoProvider);
+    for (final id in ids) {
+      await dao.deleteSession(id);
+    }
+    _exitSelectionMode();
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(n == 1 ? 'Deleted 1 moment' : 'Deleted $n moments'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _selectAllVisible(List<ListeningSession> sessions) {
+    final filtered = _applyMomentFilter(sessions);
+    setState(() {
+      _selectedSessionIds
+        ..clear()
+        ..addAll(filtered.map((e) => e.id));
+    });
+  }
+
+  List<ListeningSession> _applyMomentFilter(List<ListeningSession> sessions) {
+    switch (_momentFilter) {
+      case _MomentFilter.all:
+        return sessions;
+      case _MomentFilter.inProgress:
+        return sessions.where((s) {
+          final st = SessionStatus.fromJson(s.status);
+          return st == SessionStatus.queued ||
+              st == SessionStatus.summarizing ||
+              st == SessionStatus.recording;
+        }).toList();
+      case _MomentFilter.ready:
+        return sessions
+            .where(
+              (s) => SessionStatus.fromJson(s.status) == SessionStatus.done,
+            )
+            .toList();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final sessionsAsync = ref.watch(allSessionsProvider);
-    final actions = ref.watch(sessionActionsProvider);
-
-    final summarizingSession = sessionsAsync.hasValue
-        ? _firstSummarizingSession(sessionsAsync.requireValue)
-        : null;
-    final showMiniBar = summarizingSession != null;
 
     return sessionsAsync.when(
       loading: () => Scaffold(
-        backgroundColor: _kAppleBlack,
-        body: const _HomeSkeleton(),
-        bottomNavigationBar: const _BottomNav(currentIndex: 0),
+        backgroundColor: Theme.of(context).colorScheme.surface,
+        body: _HomeSkeleton(
+          onMorePressed: () => _showHomeActionsMenu(context),
+        ),
       ),
       error: (e, _) => Scaffold(
-        backgroundColor: _kAppleBlack,
+        backgroundColor: Theme.of(context).colorScheme.surface,
         body: Center(
           child: Text(
             'Error: $e',
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: Colors.white70,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
           ),
         ),
-        bottomNavigationBar: const _BottomNav(currentIndex: 0),
       ),
       data: (sessions) {
         return Scaffold(
-          backgroundColor: _kAppleBlack,
+          backgroundColor: Theme.of(context).colorScheme.surface,
           body: Stack(
             children: [
               SafeArea(
                 bottom: false,
                 child: sessions.isEmpty
                     ? CustomScrollView(
+                        cacheExtent: _kScrollCacheExtent,
                         slivers: [
-                          _HomeSliverAppBar(totalCount: 0),
+                          _HomeSliverAppBar(
+                            totalCount: 0,
+                            onMorePressed: () => _showHomeActionsMenu(context),
+                          ),
                           SliverFillRemaining(
                             hasScrollBody: false,
                             child: Padding(
@@ -488,7 +496,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                 subtitle:
                                     'Pull down the notification bar and tap Save Moment while a podcast is playing.',
                                 action: PSNButton(
-                                  label: 'Browse Podcasts',
+                                  label: 'Browse podcasts',
                                   variant: ButtonVariant.secondary,
                                   onTap: () => context.push('/manual-entry'),
                                 ),
@@ -499,78 +507,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       )
                     : _buildSessionList(context, ref, sessions),
               ),
-              Positioned(
-                right: _kEdgePadding,
-                bottom: _fabBottomInset(showMiniBar),
-                child: Material(
-                  color: _kFabAccent,
-                  borderRadius: BorderRadius.circular(14),
-                  elevation: 6,
-                  shadowColor: Colors.black54,
-                  child: InkWell(
-                    onTap: () => _showFabSheet(context),
-                    borderRadius: BorderRadius.circular(14),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 18,
-                        vertical: 14,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.add, color: Colors.white, size: 22),
-                          const SizedBox(width: 8),
-                          Text(
-                            '+ Add Moment',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w600,
-                              fontFamily: !kIsWeb &&
-                                      defaultTargetPlatform ==
-                                          TargetPlatform.iOS
-                                  ? '.SF Pro Text'
-                                  : null,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              if (kDebugMode)
+              if (_selectionMode)
                 Positioned(
-                  left: _kEdgePadding,
-                  bottom: _fabBottomInset(showMiniBar),
-                  child: Opacity(
-                    opacity: 0.85,
-                    child: Material(
-                      color: _kAppleNavBg,
-                      borderRadius: BorderRadius.circular(12),
-                      child: InkWell(
-                        onTap: () => _showDebugSheet(context, actions),
-                        borderRadius: BorderRadius.circular(12),
-                        child: const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: Text('🛠', style: TextStyle(fontSize: 18)),
-                        ),
-                      ),
-                    ),
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _SelectionBottomBar(
+                    selectedCount: _selectedSessionIds.length,
+                    onDone: _exitSelectionMode,
+                    onSelectAll: () => _selectAllVisible(sessions),
+                    onDelete: () => _deleteSelectedSessions(context, ref),
                   ),
                 ),
-            ],
-          ),
-          bottomNavigationBar: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (summarizingSession != null)
-                SummarizingMiniBar(
-                  session: summarizingSession,
-                  onTap: () =>
-                      context.push('/summary/${summarizingSession.id}'),
-                ),
-              const _BottomNav(currentIndex: 0),
             ],
           ),
         );
@@ -588,10 +536,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             SessionStatus.fromJson(s.status) == SessionStatus.recording)
         .toList();
 
-    final grouped = _groupByDate(sessions);
+    final filtered = _applyMomentFilter(sessions);
+    final grouped = _groupByDate(filtered);
 
     final slivers = <Widget>[
-      _HomeSliverAppBar(totalCount: sessions.length),
+      _HomeSliverAppBar(
+        totalCount: sessions.length,
+        onMorePressed: () => _showHomeActionsMenu(context),
+      ),
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            _kEdgePadding,
+            Tokens.spaceSm,
+            _kEdgePadding,
+            Tokens.spaceMd,
+          ),
+          child: _MomentFilterBar(
+            value: _momentFilter,
+            onChanged: (v) => setState(() => _momentFilter = v),
+          ),
+        ),
+      ),
+      if (_selectionMode)
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              _kEdgePadding,
+              0,
+              _kEdgePadding,
+              Tokens.spaceSm,
+            ),
+            child: _SelectionHintBanner(),
+          ),
+        ),
       if (recordingSessions.isNotEmpty)
         SliverToBoxAdapter(
           child: Padding(
@@ -609,6 +587,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ),
     ];
 
+    if (filtered.isEmpty) {
+      slivers.add(
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Padding(
+            padding: const EdgeInsets.all(Tokens.spaceLg),
+            child: Center(
+              child: Text(
+                'No moments match this filter.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ),
+          ),
+        ),
+      );
+      return CustomScrollView(
+        cacheExtent: _kScrollCacheExtent,
+        slivers: slivers,
+      );
+    }
+
     grouped.forEach((section, items) {
       slivers.add(
         SliverToBoxAdapter(
@@ -624,12 +626,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 Expanded(
                   child: Text(
                     section,
-                    style: _appleSectionHeader(context),
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
                   ),
                 ),
                 Icon(
                   Icons.chevron_right_rounded,
-                  color: Colors.white.withValues(alpha: 0.35),
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurfaceVariant
+                      .withValues(alpha: 0.5),
                   size: 28,
                 ),
               ],
@@ -641,40 +648,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         SliverList.separated(
           itemBuilder: (ctx, index) {
             final session = items[index];
+            final card = SessionCard(
+              session: session,
+              onTap: () => context.push('/summary/${session.id}'),
+              onDelete: () =>
+                  ref.read(sessionDaoProvider).deleteSession(session.id),
+              onSummarizeAgain: () {},
+              onChangeStyle: () {},
+              selectionMode: _selectionMode,
+              isSelected: _selectedSessionIds.contains(session.id),
+              onSelectionToggle: () => _toggleSessionSelection(session.id),
+            );
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
-              child: Dismissible(
-                key: ValueKey('session-${session.id}'),
-                direction: DismissDirection.endToStart,
-                background: Container(
-                  decoration: BoxDecoration(
-                    color: Tokens.errorDim,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  alignment: Alignment.centerRight,
-                  padding: const EdgeInsets.only(right: _kEdgePadding),
-                  child: const Icon(
-                    Icons.delete_outline,
-                    color: Tokens.error,
-                  ),
-                ),
-                confirmDismiss: (_) async {
-                  final confirmed =
-                      await _confirmDelete(context, session.title);
-                  if (confirmed == true) {
-                    await ref.read(sessionDaoProvider).deleteSession(session.id);
-                  }
-                  return confirmed ?? false;
-                },
-                child: SessionCard(
-                  session: session,
-                  onTap: () => context.push('/summary/${session.id}'),
-                  onDelete: () =>
-                      ref.read(sessionDaoProvider).deleteSession(session.id),
-                  onSummarizeAgain: () {},
-                  onChangeStyle: () {},
-                ),
-              ),
+              child: _selectionMode
+                  ? card
+                  : Dismissible(
+                      key: ValueKey('session-${session.id}'),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .errorContainer,
+                          borderRadius:
+                              BorderRadius.circular(Tokens.radiusMd),
+                        ),
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: _kEdgePadding),
+                        child: Icon(
+                          Icons.delete_outline_rounded,
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                      confirmDismiss: (_) async {
+                        final confirmed =
+                            await showConfirmDeleteSessionSheet(
+                          context,
+                          session.title,
+                        );
+                        if (confirmed == true) {
+                          await ref
+                              .read(sessionDaoProvider)
+                              .deleteSession(session.id);
+                        }
+                        return confirmed ?? false;
+                      },
+                      child: card,
+                    ),
             );
           },
           separatorBuilder: (_, _) => const SizedBox(height: _kCardSpacing),
@@ -683,7 +704,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       );
     });
 
-    return CustomScrollView(slivers: slivers);
+    slivers.add(
+      SliverToBoxAdapter(
+        child: SizedBox(height: _selectionMode ? 88 : 24),
+      ),
+    );
+
+    return CustomScrollView(
+      cacheExtent: _kScrollCacheExtent,
+      slivers: slivers,
+    );
   }
 
   Future<void> _showFabSheet(BuildContext context) async {
@@ -694,7 +724,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         mainAxisSize: MainAxisSize.min,
         children: [
           PSNButton(
-            label: '✏️  Add Manually',
+            label: 'Add manually',
+            icon: const Icon(Icons.edit_outlined, size: 20),
             fullWidth: true,
             variant: ButtonVariant.secondary,
             onTap: () {
@@ -704,7 +735,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
           const SizedBox(height: Tokens.spaceSm),
           PSNButton(
-            label: '🎙  Browse Podcasts',
+            label: 'Browse podcasts',
+            icon: const Icon(Icons.podcasts_outlined, size: 20),
             fullWidth: true,
             onTap: () {
               Navigator.of(context).pop();
@@ -716,165 +748,92 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Future<void> _showDebugSheet(
-    BuildContext context,
-    SessionActions actions,
-  ) async {
-    await PSNBottomSheet.show(
+  /// Apple-style “⋯” menu: add, manual entry, select to delete.
+  Future<void> _showHomeActionsMenu(BuildContext context) async {
+    higLightTap();
+    if (!context.mounted) return;
+    await showModalBottomSheet<void>(
       context: context,
-      title: 'Debug tools',
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _debugTile(
-            context,
-            label: 'Add Queued Session',
-            onTap: () async {
-              await _insertFakeSession(actions, status: SessionStatus.queued);
-              if (context.mounted) Navigator.of(context).pop();
-            },
-          ),
-          _debugTile(
-            context,
-            label: 'Add Recording Session',
-            onTap: () async {
-              await _insertFakeSession(actions,
-                  status: SessionStatus.recording);
-              if (context.mounted) Navigator.of(context).pop();
-            },
-          ),
-          _debugTile(
-            context,
-            label: 'Add Summarizing Session',
-            onTap: () async {
-              await _insertFakeSession(actions,
-                  status: SessionStatus.summarizing);
-              if (context.mounted) Navigator.of(context).pop();
-            },
-          ),
-          _debugTile(
-            context,
-            label: 'Add Done Session',
-            onTap: () async {
-              await _insertFakeSession(actions,
-                  status: SessionStatus.done, withSummary: true);
-              if (context.mounted) Navigator.of(context).pop();
-            },
-          ),
-          _debugTile(
-            context,
-            label: 'Clear All Sessions',
-            isDestructive: true,
-            onTap: () async {
-              await ref.read(sessionDaoProvider).deleteAllSessions();
-              if (context.mounted) Navigator.of(context).pop();
-            },
-          ),
-          _debugTile(
-            context,
-            label: 'Go to Design Preview',
-            onTap: () {
-              Navigator.of(context).pop();
-              context.push('/design-preview');
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  ListTile _debugTile(
-    BuildContext context, {
-    required String label,
-    required VoidCallback onTap,
-    bool isDestructive = false,
-  }) {
-    return ListTile(
-      title: Text(
-        label,
-        style: Tokens.bodyM.copyWith(
-          color: isDestructive ? Tokens.error : Tokens.textPrimary,
-        ),
-      ),
-      onTap: onTap,
-    );
-  }
-
-  Future<void> _insertFakeSession(
-    SessionActions actions, {
-    required SessionStatus status,
-    bool withSummary = false,
-  }) async {
-    const cover =
-        'https://picsum.photos/seed/podcast_safety_net/300/300';
-    final id = await actions.createSession(
-      title: 'Deep Work & Focus',
-      artist: 'Mindful Productivity',
-      saveMethod: SaveMethod.notification,
-      startTimeSec: 12 * 60,
-      endTimeSec: 31 * 60,
-      rangeLabel: '12:00 – 31:00',
-      summaryStyle: SummaryStyle.insights,
-      artworkUrl: cover,
-    );
-
-    if (withSummary || status != SessionStatus.queued) {
-      final db = ref.read(sessionDaoProvider);
-      final row = await db.getSessionById(id);
-      if (row != null) {
-        await db.updateSession(
-          row.toCompanion(true).copyWith(
-                status: Value(status.name),
-                bullet1: const Value(
-                  'Why your brain treats podcasts like background noise — and how to capture ideas anyway.',
-                ),
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      useSafeArea: true,
+      enableDrag: true,
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        final tt = Theme.of(ctx).textTheme;
+        return PSNBottomSheet(
+          title: 'More',
+          showHandle: true,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ListTile(
+                leading: Icon(Icons.add_circle_outline_rounded, color: cs.primary),
+                title: const Text('Add moment'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _showFabSheet(context);
+                },
               ),
+              ListTile(
+                leading: Icon(Icons.edit_note_rounded, color: cs.primary),
+                title: const Text('Manual entry'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  context.push('/manual-entry');
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.content_paste_go_rounded, color: cs.primary),
+                title: const Text('Paste copied link'),
+                subtitle: const Text('Spotify / Apple Podcasts URL from clipboard'),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  unawaited(_checkClipboardForPodcast(userInitiated: true));
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  _selectionMode
+                      ? Icons.check_circle_outline_rounded
+                      : Icons.checklist_rounded,
+                  color: _selectionMode ? cs.error : cs.primary,
+                ),
+                title: Text(
+                  _selectionMode ? 'Done selecting' : 'Select to delete',
+                  style: tt.bodyLarge?.copyWith(
+                    color: _selectionMode ? cs.error : cs.onSurface,
+                  ),
+                ),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  setState(() {
+                    if (_selectionMode) {
+                      _selectionMode = false;
+                      _selectedSessionIds.clear();
+                    } else {
+                      _selectionMode = true;
+                    }
+                  });
+                },
+              ),
+            ],
+          ),
         );
-      }
-    }
+      },
+    );
   }
-}
-
-Future<bool?> _confirmDelete(BuildContext context, String title) {
-  return showModalBottomSheet<bool>(
-    context: context,
-    backgroundColor: Colors.transparent,
-    builder: (ctx) {
-      return PSNBottomSheet(
-        title: 'Delete session?',
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'This will permanently remove “$title” and its summary.',
-              style: Tokens.bodyM,
-            ),
-            const SizedBox(height: Tokens.spaceLg),
-            PSNButton(
-              label: 'Delete',
-              variant: ButtonVariant.danger,
-              fullWidth: true,
-              onTap: () => Navigator.of(ctx).pop(true),
-            ),
-            const SizedBox(height: Tokens.spaceSm),
-            PSNButton(
-              label: 'Cancel',
-              variant: ButtonVariant.ghost,
-              fullWidth: true,
-              onTap: () => Navigator.of(ctx).pop(false),
-            ),
-          ],
-        ),
-      );
-    },
-  );
 }
 
 class _HomeSliverAppBar extends StatelessWidget {
-  const _HomeSliverAppBar({required this.totalCount});
+  const _HomeSliverAppBar({
+    required this.totalCount,
+    required this.onMorePressed,
+  });
 
   final int totalCount;
+  final VoidCallback onMorePressed;
 
   String get _greeting {
     final hour = DateTime.now().hour;
@@ -885,52 +844,76 @@ class _HomeSliverAppBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     return SliverAppBar(
       pinned: true,
-      expandedHeight: 120,
-      backgroundColor: _kAppleBlack,
+      // Tall enough for greeting row + “N moments saved” + padding during expand.
+      expandedHeight: 132,
+      backgroundColor: cs.surface,
       surfaceTintColor: Colors.transparent,
       automaticallyImplyLeading: false,
       flexibleSpace: LayoutBuilder(
         builder: (context, constraints) {
-          final collapsed =
-              constraints.biggest.height <= kToolbarHeight + 16;
+          final h = constraints.biggest.height;
+          final collapsed = h <= kToolbarHeight + 16;
+          // During collapse, height can sit between toolbar and full expand — hiding
+          // the subtitle in that band avoids “bottom overflowed by ~8px”.
+          final showSubtitle = !collapsed && h >= 102;
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        collapsed ? 'Podcast Safety Net' : _greeting,
-                        style: _appleAppBarTitle(context, collapsed: collapsed),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+            child: Align(
+              alignment: Alignment.bottomLeft,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          collapsed ? 'Moments' : _greeting,
+                          style: collapsed
+                              ? tt.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                )
+                              : tt.headlineMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
-                    const _CreditsChip(),
-                    const SizedBox(width: 4),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.settings_outlined,
-                        color: Colors.white,
+                      const _CreditsChip(),
+                      const SizedBox(width: Tokens.spaceXs),
+                      IconButton(
+                        onPressed: () {
+                          higLightTap();
+                          onMorePressed();
+                        },
+                        icon: const Icon(Icons.more_horiz_rounded),
+                        tooltip: 'More',
+                        style: IconButton.styleFrom(
+                          foregroundColor: cs.onSurfaceVariant,
+                          minimumSize: const Size(Tokens.minTap, Tokens.minTap),
+                        ),
                       ),
-                      onPressed: () => GoRouter.of(context).push('/settings'),
-                    ),
-                  ],
-                ),
-                if (!collapsed) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    '$totalCount moments saved',
-                    style: _appleSubtitle(context),
+                    ],
                   ),
-                  const SizedBox(height: 12),
+                  if (showSubtitle) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      '$totalCount moments saved',
+                      style: tt.bodyMedium?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: Tokens.spaceSm + 4),
+                  ],
                 ],
-              ],
+              ),
             ),
           );
         },
@@ -947,51 +930,57 @@ class _CreditsChip extends StatelessWidget {
     const remainingMinutes = 342;
     final low = remainingMinutes < 50 && remainingMinutes > 0;
     final empty = remainingMinutes == 0;
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     final color = empty
-        ? Tokens.error
-        : (low ? Tokens.warning : const Color(0xFF8E8E93));
+        ? cs.error
+        : (low ? cs.tertiary : cs.onSurfaceVariant);
 
-    return GestureDetector(
-      onTap: () {
-        PSNBottomSheet.show(
-          context: context,
-          title: 'Credits',
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '$remainingMinutes minutes left this month.',
-                style: Tokens.bodyL,
+    return Semantics(
+      button: true,
+      label: 'Credits, $remainingMinutes minutes remaining',
+      child: Material(
+        color: cs.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(Tokens.radiusLg),
+        child: InkWell(
+          onTap: () {
+            higLightTap();
+            PSNBottomSheet.show(
+              context: context,
+              title: 'Credits',
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$remainingMinutes minutes left this month.',
+                    style: tt.bodyLarge,
+                  ),
+                  const SizedBox(height: Tokens.spaceMd),
+                  PSNButton(
+                    label: 'Upgrade plan',
+                    fullWidth: true,
+                    onTap: () {
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                ],
               ),
-              const SizedBox(height: Tokens.spaceMd),
-              PSNButton(
-                label: 'Upgrade plan',
-                fullWidth: true,
-                onTap: () {
-                  Navigator.of(context).pop();
-                },
+            );
+          },
+          borderRadius: BorderRadius.circular(Tokens.radiusLg),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Tokens.spaceSm + 4,
+              vertical: Tokens.spaceSm,
+            ),
+            child: Text(
+              '$remainingMinutes min',
+              style: tt.labelLarge?.copyWith(
+                fontWeight: FontWeight.w500,
+                color: color,
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
-            ],
-          ),
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: _kAppleNavBg,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Text(
-          '$remainingMinutes min',
-          style: TextStyle(
-            fontFamily: !kIsWeb &&
-                    defaultTargetPlatform == TargetPlatform.iOS
-                ? '.SF Pro Text'
-                : null,
-            fontSize: 13,
-            fontWeight: FontWeight.w500,
-            color: color,
-            fontFeatures: const [FontFeature.tabularFigures()],
+            ),
           ),
         ),
       ),
@@ -1014,6 +1003,8 @@ class _RangePickerRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
@@ -1022,9 +1013,8 @@ class _RangePickerRow extends StatelessWidget {
             width: 64,
             child: Text(
               label,
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.65),
-                fontSize: 14,
+              style: tt.bodyMedium?.copyWith(
+                color: cs.onSurfaceVariant,
                 fontWeight: FontWeight.w500,
               ),
             ),
@@ -1033,39 +1023,29 @@ class _RangePickerRow extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                SizedBox(
-                  width: 44,
-                  height: 44,
-                  child: Center(
-                    child: IconButton(
-                      onPressed: onMinus,
-                      icon: const Icon(Icons.remove_circle_outline_rounded),
-                      color: _kFabAccent,
-                      padding: EdgeInsets.zero,
-                    ),
-                  ),
+                IconButton(
+                  onPressed: () {
+                    higLightTap();
+                    onMinus();
+                  },
+                  icon: const Icon(Icons.remove_circle_outline_rounded),
+                  color: cs.primary,
+                  tooltip: 'Decrease $label',
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: Tokens.spaceSm + 2),
                 Text(
                   valueText,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600),
                 ),
-                const SizedBox(width: 10),
-                SizedBox(
-                  width: 44,
-                  height: 44,
-                  child: Center(
-                    child: IconButton(
-                      onPressed: onPlus,
-                      icon: const Icon(Icons.add_circle_outline_rounded),
-                      color: _kFabAccent,
-                      padding: EdgeInsets.zero,
-                    ),
-                  ),
+                const SizedBox(width: Tokens.spaceSm + 2),
+                IconButton(
+                  onPressed: () {
+                    higLightTap();
+                    onPlus();
+                  },
+                  icon: const Icon(Icons.add_circle_outline_rounded),
+                  color: cs.primary,
+                  tooltip: 'Increase $label',
                 ),
               ],
             ),
@@ -1076,71 +1056,188 @@ class _RangePickerRow extends StatelessWidget {
   }
 }
 
-class _BottomNav extends StatelessWidget {
-  const _BottomNav({required this.currentIndex});
-
-  final int currentIndex;
+class _SelectionHintBanner extends StatelessWidget {
+  const _SelectionHintBanner();
 
   @override
   Widget build(BuildContext context) {
-    final router = GoRouter.of(context);
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
 
-    return Container(
-      height: 60,
-      decoration: const BoxDecoration(
-        color: _kAppleNavBg,
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _navItem(
-            context,
-            icon: Icons.home_rounded,
-            index: 0,
-            onTap: () => router.go('/'),
-          ),
-          _navItem(
-            context,
-            icon: Icons.bookmarks_rounded,
-            index: 1,
-            onTap: () => router.go('/library'),
-          ),
-          _navItem(
-            context,
-            icon: Icons.settings_rounded,
-            index: 2,
-            onTap: () => router.go('/settings'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _navItem(
-    BuildContext context, {
-    required IconData icon,
-    required int index,
-    required VoidCallback onTap,
-  }) {
-    final selected = currentIndex == index;
-    return IconButton(
-      onPressed: onTap,
-      icon: Icon(
-        icon,
-        color: selected ? _kFabAccent : const Color(0xFF8E8E93),
+    return Material(
+      color: cs.primaryContainer.withValues(alpha: 0.4),
+      borderRadius: BorderRadius.circular(Tokens.radiusMd),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: Tokens.spaceMd,
+          vertical: Tokens.spaceSm + 2,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.touch_app_outlined, color: cs.primary, size: 22),
+            const SizedBox(width: Tokens.spaceSm),
+            Expanded(
+              child: Text(
+                'Tap moments to select, then tap Delete. Swipe-to-delete is off while selecting.',
+                style: tt.bodySmall?.copyWith(color: cs.onPrimaryContainer),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
+class _SelectionBottomBar extends StatelessWidget {
+  const _SelectionBottomBar({
+    required this.selectedCount,
+    required this.onDone,
+    required this.onSelectAll,
+    required this.onDelete,
+  });
+
+  final int selectedCount;
+  final VoidCallback onDone;
+  final VoidCallback onSelectAll;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Material(
+      elevation: 8,
+      shadowColor: Colors.black26,
+      color: cs.surfaceContainerHigh,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: Tokens.spaceMd,
+            vertical: Tokens.spaceSm,
+          ),
+          child: Row(
+            children: [
+              TextButton(
+                onPressed: () {
+                  higLightTap();
+                  onDone();
+                },
+                child: const Text('Done'),
+              ),
+              const Spacer(),
+              Text(
+                selectedCount == 0
+                    ? 'Select moments'
+                    : '$selectedCount selected',
+                style: tt.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              if (selectedCount > 0) ...[
+                TextButton(
+                  onPressed: () {
+                    higLightTap();
+                    onSelectAll();
+                  },
+                  child: const Text('All'),
+                ),
+                const SizedBox(width: Tokens.spaceXs),
+                FilledButton(
+                  onPressed: () {
+                    higLightTap();
+                    onDelete();
+                  },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: cs.error,
+                    foregroundColor: cs.onError,
+                  ),
+                  child: const Text('Delete'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MomentFilterBar extends StatelessWidget {
+  const _MomentFilterBar({
+    required this.value,
+    required this.onChanged,
+  });
+
+  final _MomentFilter value;
+  final ValueChanged<_MomentFilter> onChanged;
+
+  static String _label(_MomentFilter f) {
+    switch (f) {
+      case _MomentFilter.all:
+        return 'All';
+      case _MomentFilter.inProgress:
+        return 'In progress';
+      case _MomentFilter.ready:
+        return 'Ready';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Show',
+          style: tt.titleSmall?.copyWith(
+            color: cs.onSurfaceVariant,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.2,
+          ),
+        ),
+        const SizedBox(height: Tokens.spaceSm),
+        Wrap(
+          spacing: Tokens.spaceSm,
+          runSpacing: Tokens.spaceSm,
+          children: _MomentFilter.values.map((f) {
+            final selected = value == f;
+            return FilterChip(
+              label: Text(_label(f)),
+              selected: selected,
+              onSelected: (_) {
+                higLightTap();
+                onChanged(f);
+              },
+              showCheckmark: false,
+              selectedColor: cs.primaryContainer,
+              labelStyle: tt.labelLarge?.copyWith(
+                color: selected ? cs.onPrimaryContainer : cs.onSurface,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+}
+
 class _HomeSkeleton extends StatelessWidget {
-  const _HomeSkeleton();
+  const _HomeSkeleton({required this.onMorePressed});
+
+  final VoidCallback onMorePressed;
 
   @override
   Widget build(BuildContext context) {
     return CustomScrollView(
+      cacheExtent: _kScrollCacheExtent,
       slivers: [
-        const _HomeSliverAppBar(totalCount: 0),
+        _HomeSliverAppBar(totalCount: 0, onMorePressed: onMorePressed),
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
           sliver: SliverList.separated(
@@ -1158,25 +1255,20 @@ class _HomeSkeleton extends StatelessWidget {
 class _AppleSessionSkeletonCard extends StatelessWidget {
   const _AppleSessionSkeletonCard();
 
-  static const _cardBg = Color(0xFF1C1C1E);
-
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final base = cs.surfaceContainerHighest;
+    final hi = cs.surfaceContainerHigh;
     return Shimmer.fromColors(
-      baseColor: const Color(0xFF2C2C2E),
-      highlightColor: const Color(0xFF3A3A3C),
+      baseColor: base,
+      highlightColor: hi,
       child: Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(Tokens.spaceMd),
         decoration: BoxDecoration(
-          color: _cardBg,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: const [
-            BoxShadow(
-              color: Colors.black54,
-              blurRadius: 12,
-              offset: Offset(0, 4),
-            ),
-          ],
+          color: cs.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(Tokens.radiusMd),
+          border: Border.all(color: cs.outlineVariant),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1185,8 +1277,8 @@ class _AppleSessionSkeletonCard extends StatelessWidget {
               width: 56,
               height: 56,
               decoration: BoxDecoration(
-                color: const Color(0xFF3A3A3C),
-                borderRadius: BorderRadius.circular(12),
+                color: base,
+                borderRadius: BorderRadius.circular(Tokens.radiusMd),
               ),
             ),
             const SizedBox(width: 14),
@@ -1198,17 +1290,17 @@ class _AppleSessionSkeletonCard extends StatelessWidget {
                     height: 16,
                     width: double.infinity,
                     decoration: BoxDecoration(
-                      color: const Color(0xFF3A3A3C),
-                      borderRadius: BorderRadius.circular(4),
+                      color: base,
+                      borderRadius: BorderRadius.circular(Tokens.radiusXs),
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: Tokens.spaceSm),
                   Container(
                     height: 16,
                     width: 180,
                     decoration: BoxDecoration(
-                      color: const Color(0xFF3A3A3C),
-                      borderRadius: BorderRadius.circular(4),
+                      color: base,
+                      borderRadius: BorderRadius.circular(Tokens.radiusXs),
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -1216,8 +1308,8 @@ class _AppleSessionSkeletonCard extends StatelessWidget {
                     height: 12,
                     width: 220,
                     decoration: BoxDecoration(
-                      color: const Color(0xFF3A3A3C),
-                      borderRadius: BorderRadius.circular(4),
+                      color: base,
+                      borderRadius: BorderRadius.circular(Tokens.radiusXs),
                     ),
                   ),
                 ],

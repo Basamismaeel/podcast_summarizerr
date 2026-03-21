@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -8,7 +7,7 @@ import '../../../models/summary_style.dart';
 import '../../../widgets/psn_button.dart';
 import 'podcast_artwork.dart';
 
-/// Apple Podcasts–inspired row card: artwork, typography from [TextTheme], shadow (no border).
+/// Grouped list row: theme surfaces, system typography, no heavy shadows.
 class SessionCard extends StatelessWidget {
   const SessionCard({
     super.key,
@@ -17,6 +16,9 @@ class SessionCard extends StatelessWidget {
     this.onDelete,
     this.onSummarizeAgain,
     this.onChangeStyle,
+    this.selectionMode = false,
+    this.isSelected = false,
+    this.onSelectionToggle,
   });
 
   final ListeningSession session;
@@ -24,34 +26,14 @@ class SessionCard extends StatelessWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onSummarizeAgain;
   final VoidCallback? onChangeStyle;
-
-  static const _metaGray = Color(0xFF8E8E93);
-  static const _cardBg = Color(0xFF1C1C1E);
-  static const _cardShadow = BoxShadow(
-    color: Colors.black54,
-    blurRadius: 12,
-    offset: Offset(0, 4),
-  );
-
-  TextStyle _sfText(BuildContext context, {
-    required double fontSize,
-    FontWeight? weight,
-    Color? color,
-    double? height,
-  }) {
-    final useSf = !kIsWeb &&
-        defaultTargetPlatform == TargetPlatform.iOS;
-    return TextStyle(
-      fontFamily: useSf ? '.SF Pro Text' : null,
-      fontSize: fontSize,
-      fontWeight: weight,
-      color: color,
-      height: height,
-    );
-  }
+  final bool selectionMode;
+  final bool isSelected;
+  final VoidCallback? onSelectionToggle;
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
     final status = SessionStatus.fromJson(session.status);
     final saveMethod = SaveMethod.fromJson(session.saveMethod);
     final bulletPreview = session.bullet1;
@@ -59,112 +41,115 @@ class SessionCard extends StatelessWidget {
     final isQueued = status == SessionStatus.queued;
 
     return GestureDetector(
-      onLongPress: () => _showContextMenu(context, status),
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: const [_cardShadow],
+      onLongPress:
+          selectionMode ? null : () => _showContextMenu(context, status),
+      child: Material(
+        color: cs.surfaceContainerLow,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Tokens.radiusMd),
+          side: BorderSide(
+            color: selectionMode && isSelected
+                ? cs.primary
+                : cs.outlineVariant.withValues(alpha: 0.5),
+            width: selectionMode && isSelected ? 2 : 1,
+          ),
         ),
-        child: Material(
-          color: _cardBg,
-          borderRadius: BorderRadius.circular(12),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: onTap,
-            borderRadius: BorderRadius.circular(12),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  PodcastArtwork(
-                    imageUrl: session.artworkUrl,
-                    labelForInitials: session.artist,
-                    size: 56,
-                    borderRadius: 12,
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Text(
-                                session.title,
-                                style: _sfText(
-                                  context,
-                                  fontSize: 17,
-                                  weight: FontWeight.w600,
-                                  color: Colors.white,
-                                  height: 1.2,
-                                ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            _SessionStatusIndicator(status: status),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          session.artist,
-                          style: _sfText(
-                            context,
-                            fontSize: 13,
-                            weight: FontWeight.w400,
-                            color: _metaGray,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          _metadataLine(session, saveMethod),
-                          style: _sfText(
-                            context,
-                            fontSize: 13,
-                            weight: FontWeight.w400,
-                            color: _metaGray,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        if (hasPreview) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            '“$bulletPreview”',
-                            style: _sfText(
-                              context,
-                              fontSize: 13,
-                              weight: FontWeight.w400,
-                              color: _metaGray,
-                              height: 1.25,
-                            ).copyWith(fontStyle: FontStyle.italic),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                        if (isQueued) ...[
-                          const SizedBox(height: 10),
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: PSNButton(
-                              label: 'Summarize',
-                              size: ButtonSize.sm,
-                              variant: ButtonVariant.secondary,
-                              onTap: onSummarizeAgain,
-                            ),
-                          ),
-                        ],
-                      ],
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: selectionMode ? onSelectionToggle : onTap,
+          borderRadius: BorderRadius.circular(Tokens.radiusMd),
+          child: Padding(
+            padding: const EdgeInsets.all(Tokens.spaceMd),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (selectionMode) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(right: Tokens.spaceSm),
+                    child: Checkbox.adaptive(
+                      value: isSelected,
+                      onChanged: (_) => onSelectionToggle?.call(),
                     ),
                   ),
                 ],
-              ),
+                PodcastArtwork(
+                  imageUrl: session.artworkUrl,
+                  labelForInitials: session.artist,
+                  size: 56,
+                  borderRadius: Tokens.radiusMd,
+                ),
+                const SizedBox(width: Tokens.spaceSm + 4),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              session.title,
+                              style: tt.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                                color: cs.onSurface,
+                                height: 1.2,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: Tokens.spaceSm),
+                          _SessionStatusIndicator(status: status),
+                        ],
+                      ),
+                      const SizedBox(height: Tokens.spaceXs),
+                      Text(
+                        session.artist,
+                        style: tt.bodyMedium?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: Tokens.spaceXs + 2),
+                      _MetadataRow(
+                        session: session,
+                        saveMethod: saveMethod,
+                        textStyle: tt.bodyMedium?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                      if (hasPreview) ...[
+                        const SizedBox(height: Tokens.spaceSm),
+                        Text(
+                          '“$bulletPreview”',
+                          style: tt.bodyMedium?.copyWith(
+                            color: cs.onSurfaceVariant,
+                            height: 1.25,
+                            fontStyle: FontStyle.italic,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                      if (isQueued) ...[
+                        const SizedBox(height: Tokens.spaceSm + 2),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: PSNButton(
+                            label: 'Summarize',
+                            size: ButtonSize.sm,
+                            variant: ButtonVariant.secondary,
+                            onTap: onSummarizeAgain,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -172,61 +157,18 @@ class SessionCard extends StatelessWidget {
     );
   }
 
-  String _metadataLine(ListeningSession s, SaveMethod method) {
-    final date = DateFormat.MMMd().format(
-      DateTime.fromMillisecondsSinceEpoch(s.createdAt),
-    );
-    final dur = _durationMinutes(s);
-    final durationPart = dur > 0 ? '$dur min' : '—';
-    final range = _rangeLabel(s);
-    return '$date · $durationPart · ${_saveMethodGlyph(method)} $range';
-  }
-
-  String _saveMethodGlyph(SaveMethod method) {
-    switch (method) {
-      case SaveMethod.notification:
-        return '🔔';
-      case SaveMethod.shake:
-        return '📳';
-      case SaveMethod.siri:
-        return '🍎';
-      case SaveMethod.googleAssistant:
-        return '🎤';
-      case SaveMethod.manual:
-        return '✏️';
-    }
-  }
-
-  String _rangeLabel(ListeningSession s) {
-    if (s.rangeLabel != null) return s.rangeLabel!;
-    if (s.endTimeSec != null) {
-      final start = _fmt(s.startTimeSec);
-      final end = _fmt(s.endTimeSec!);
-      return '$start – $end';
-    }
-    return 'Full episode';
-  }
-
-  String _fmt(int totalSeconds) {
-    final m = totalSeconds ~/ 60;
-    final sec = totalSeconds % 60;
-    return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
-  }
-
-  int _durationMinutes(ListeningSession s) {
-    if (s.endTimeSec == null) return 0;
-    return ((s.endTimeSec! - s.startTimeSec) / 60).round();
-  }
-
   void _showContextMenu(BuildContext context, SessionStatus status) {
+    final cs = Theme.of(context).colorScheme;
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
+      useSafeArea: true,
+      enableDrag: true,
       builder: (ctx) {
         return SafeArea(
           child: Container(
             decoration: BoxDecoration(
-              color: Tokens.bgSurface,
+              color: cs.surfaceContainerHigh,
               borderRadius: const BorderRadius.vertical(
                 top: Radius.circular(Tokens.radiusLg),
               ),
@@ -234,16 +176,16 @@ class SessionCard extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const SizedBox(height: 12),
+                const SizedBox(height: Tokens.spaceSm + 4),
                 Container(
                   width: 32,
                   height: 3,
                   decoration: BoxDecoration(
-                    color: Tokens.borderMedium,
+                    color: cs.onSurfaceVariant.withValues(alpha: 0.35),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: Tokens.spaceSm),
                 if (status == SessionStatus.done)
                   _ActionTile(
                     label: 'Summarize again',
@@ -277,7 +219,91 @@ class SessionCard extends StatelessWidget {
   }
 }
 
-/// Subtle status: Done = checkmark only; Queued = gray dot; Summarizing = indigo spinner; etc.
+class _MetadataRow extends StatelessWidget {
+  const _MetadataRow({
+    required this.session,
+    required this.saveMethod,
+    this.textStyle,
+  });
+
+  final ListeningSession session;
+  final SaveMethod saveMethod;
+  final TextStyle? textStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final date = DateFormat.MMMd().format(
+      DateTime.fromMillisecondsSinceEpoch(session.createdAt),
+    );
+    final dur = _durationMinutes(session);
+    final durationPart = dur > 0 ? '$dur min' : '—';
+    final range = _rangeLabel(session);
+
+    return Row(
+      children: [
+        Expanded(
+          child: Text.rich(
+            TextSpan(
+              style: textStyle,
+              children: [
+                TextSpan(text: '$date · $durationPart · '),
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: Icon(
+                    _saveMethodIcon(saveMethod),
+                    size: 16,
+                    color: cs.onSurfaceVariant,
+                  ),
+                ),
+                TextSpan(text: ' $range'),
+              ],
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+
+  int _durationMinutes(ListeningSession s) {
+    if (s.endTimeSec == null) return 0;
+    return ((s.endTimeSec! - s.startTimeSec) / 60).round();
+  }
+
+  String _rangeLabel(ListeningSession s) {
+    if (s.rangeLabel != null) return s.rangeLabel!;
+    if (s.endTimeSec != null) {
+      final start = _fmt(s.startTimeSec);
+      final end = _fmt(s.endTimeSec!);
+      return '$start – $end';
+    }
+    return 'Full episode';
+  }
+
+  String _fmt(int totalSeconds) {
+    final m = totalSeconds ~/ 60;
+    final sec = totalSeconds % 60;
+    return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
+  }
+
+  IconData _saveMethodIcon(SaveMethod method) {
+    switch (method) {
+      case SaveMethod.notification:
+        return Icons.notifications_outlined;
+      case SaveMethod.shake:
+        return Icons.vibration_rounded;
+      case SaveMethod.siri:
+        return Icons.mic_none_rounded;
+      case SaveMethod.googleAssistant:
+        return Icons.graphic_eq_rounded;
+      case SaveMethod.manual:
+        return Icons.edit_outlined;
+    }
+  }
+}
+
 class _SessionStatusIndicator extends StatelessWidget {
   const _SessionStatusIndicator({required this.status});
 
@@ -285,25 +311,26 @@ class _SessionStatusIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     switch (status) {
       case SessionStatus.done:
-        return const Padding(
-          padding: EdgeInsets.only(top: 2),
+        return Padding(
+          padding: const EdgeInsets.only(top: 2),
           child: Icon(
             Icons.check_circle_rounded,
             size: 18,
-            color: Color(0xFF8E8E93),
+            color: cs.onSurfaceVariant,
           ),
         );
       case SessionStatus.queued:
-        return const Padding(
-          padding: EdgeInsets.only(top: 6, right: 2),
+        return Padding(
+          padding: const EdgeInsets.only(top: 6, right: 2),
           child: SizedBox(
             width: 8,
             height: 8,
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: Color(0xFF8E8E93),
+                color: cs.onSurfaceVariant,
                 shape: BoxShape.circle,
               ),
             ),
@@ -317,31 +344,31 @@ class _SessionStatusIndicator extends StatelessWidget {
             height: 16,
             child: CircularProgressIndicator(
               strokeWidth: 2,
-              color: Tokens.accent,
+              color: cs.primary,
             ),
           ),
         );
       case SessionStatus.recording:
-        return const Padding(
-          padding: EdgeInsets.only(top: 6),
+        return Padding(
+          padding: const EdgeInsets.only(top: 6),
           child: SizedBox(
             width: 8,
             height: 8,
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: Tokens.error,
+                color: cs.error,
                 shape: BoxShape.circle,
               ),
             ),
           ),
         );
       case SessionStatus.error:
-        return const Padding(
-          padding: EdgeInsets.only(top: 2),
+        return Padding(
+          padding: const EdgeInsets.only(top: 2),
           child: Icon(
             Icons.error_outline_rounded,
             size: 18,
-            color: Color(0xFF8E8E93),
+            color: cs.onSurfaceVariant,
           ),
         );
     }
@@ -361,11 +388,12 @@ class _ActionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return ListTile(
       title: Text(
         label,
         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-              color: isDestructive ? Tokens.error : Tokens.textPrimary,
+              color: isDestructive ? cs.error : cs.onSurface,
             ),
       ),
       onTap: onTap,

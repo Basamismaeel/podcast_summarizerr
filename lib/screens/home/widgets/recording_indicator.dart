@@ -31,7 +31,10 @@ class _RecordingIndicatorState extends State<RecordingIndicator>
       duration: const Duration(seconds: 1),
     )..repeat(reverse: true);
     _opacity = Tween<double>(begin: 0.4, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+      CurvedAnimation(
+        parent: _controller,
+        curve: Tokens.springCurve,
+      ),
     );
   }
 
@@ -53,15 +56,18 @@ class _RecordingIndicatorState extends State<RecordingIndicator>
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return Container(
       padding: const EdgeInsets.symmetric(
-        horizontal: 20,
+        horizontal: Tokens.spaceMd + 4,
         vertical: Tokens.spaceSm,
       ),
       decoration: BoxDecoration(
-        color: Tokens.errorDim,
+        color: cs.errorContainer,
         borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(color: Tokens.error.withValues(alpha: 0.4)),
+        border: Border.all(color: cs.error.withValues(alpha: 0.45)),
       ),
       child: Row(
         children: [
@@ -70,32 +76,38 @@ class _RecordingIndicatorState extends State<RecordingIndicator>
             child: Container(
               width: 10,
               height: 10,
-              decoration: const BoxDecoration(
-                color: Tokens.error,
+              decoration: BoxDecoration(
+                color: cs.error,
                 shape: BoxShape.circle,
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: Tokens.spaceSm),
           Text(
-            '● Recording',
-            style: Tokens.bodyS.copyWith(color: Tokens.error),
+            'Recording',
+            style: tt.bodySmall?.copyWith(
+              color: cs.error,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: Tokens.spaceSm),
           Expanded(
             child: Text(
               widget.session.title,
-              style: Tokens.bodyS.copyWith(color: Tokens.textPrimary),
+              style: tt.bodySmall?.copyWith(color: cs.onSurface),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: Tokens.spaceSm),
           Text(
             _elapsedLabel,
-            style: Tokens.mono.copyWith(fontSize: 11),
+            style: tt.labelSmall?.copyWith(
+              fontFeatures: const [FontFeature.tabularFigures()],
+              fontFamily: 'monospace',
+            ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: Tokens.spaceSm),
           PSNButton(
             label: 'Stop',
             size: ButtonSize.sm,

@@ -1,6 +1,8 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/app_theme_preference.dart';
 import '../models/summary_style.dart';
 
 final settingsProvider =
@@ -16,6 +18,8 @@ class AppSettings {
     this.notificationsEnabled = true,
     this.hapticFeedback = true,
     this.onboardingComplete = false,
+    this.themePreference = AppThemePreference.system,
+    this.accentColorArgb = 0xFF007AFF,
   });
 
   final SummaryStyle defaultSummaryStyle;
@@ -24,6 +28,11 @@ class AppSettings {
   final bool notificationsEnabled;
   final bool hapticFeedback;
   final bool onboardingComplete;
+  final AppThemePreference themePreference;
+  /// Stored as 32-bit ARGB (e.g. 0xFF007AFF).
+  final int accentColorArgb;
+
+  Color get accentColor => Color(accentColorArgb);
 
   AppSettings copyWith({
     SummaryStyle? defaultSummaryStyle,
@@ -32,6 +41,8 @@ class AppSettings {
     bool? notificationsEnabled,
     bool? hapticFeedback,
     bool? onboardingComplete,
+    AppThemePreference? themePreference,
+    int? accentColorArgb,
   }) {
     return AppSettings(
       defaultSummaryStyle: defaultSummaryStyle ?? this.defaultSummaryStyle,
@@ -40,6 +51,8 @@ class AppSettings {
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       hapticFeedback: hapticFeedback ?? this.hapticFeedback,
       onboardingComplete: onboardingComplete ?? this.onboardingComplete,
+      themePreference: themePreference ?? this.themePreference,
+      accentColorArgb: accentColorArgb ?? this.accentColorArgb,
     );
   }
 }
@@ -48,6 +61,8 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
   SettingsNotifier() : super(const AppSettings()) {
     _load();
   }
+
+  static const _defaultAccent = 0xFF007AFF;
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -60,6 +75,9 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
       notificationsEnabled: prefs.getBool('notifications_enabled') ?? true,
       hapticFeedback: prefs.getBool('haptic_feedback') ?? true,
       onboardingComplete: prefs.getBool('onboarding_done') ?? false,
+      themePreference:
+          AppThemePreference.fromStorage(prefs.getString('theme_preference')),
+      accentColorArgb: prefs.getInt('accent_color') ?? _defaultAccent,
     );
   }
 
@@ -97,5 +115,18 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
     state = state.copyWith(onboardingComplete: true);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('onboarding_done', true);
+  }
+
+  Future<void> setThemePreference(AppThemePreference value) async {
+    state = state.copyWith(themePreference: value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('theme_preference', value.toStorage());
+  }
+
+  Future<void> setAccentColor(Color color) async {
+    final argb = color.toARGB32();
+    state = state.copyWith(accentColorArgb: argb);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('accent_color', argb);
   }
 }

@@ -2,6 +2,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/tokens.dart';
+
 /// 56×56 (list) or 40×40 (mini bar) podcast artwork with network / gradient fallback.
 class PodcastArtwork extends StatelessWidget {
   const PodcastArtwork({
@@ -45,7 +47,10 @@ class PodcastArtwork extends StatelessWidget {
         child: CachedNetworkImage(
           imageUrl: url,
           fit: BoxFit.cover,
-          fadeInDuration: const Duration(milliseconds: 200),
+          fadeInDuration: Tokens.durationFast,
+          fadeOutDuration: Tokens.durationFast,
+          fadeInCurve: Tokens.springCurve,
+          fadeOutCurve: Tokens.springCurve,
           placeholder: (context, progress) => Container(
             color: _placeholderGray,
           ),

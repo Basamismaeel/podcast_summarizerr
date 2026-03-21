@@ -21,22 +21,28 @@ class OnboardingPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 32),
+      padding: const EdgeInsets.symmetric(horizontal: Tokens.spaceXl),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(data.emoji, style: const TextStyle(fontSize: 64)),
+          Text(
+            data.emoji,
+            style: tt.displayMedium,
+            textAlign: TextAlign.center,
+          ),
           SizedBox(height: Tokens.spaceLg),
           Text(
             data.title,
-            style: Tokens.headingXL,
+            style: tt.displaySmall?.copyWith(fontWeight: FontWeight.w600),
             textAlign: TextAlign.center,
           ),
           SizedBox(height: Tokens.spaceSm),
           Text(
             data.subtitle,
-            style: Tokens.bodyL,
+            style: tt.bodyLarge,
             textAlign: TextAlign.center,
           ),
         ],

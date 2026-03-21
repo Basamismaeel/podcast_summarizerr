@@ -16,40 +16,55 @@ class ShareCardGenerator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return RepaintBoundary(
       child: Container(
         padding: const EdgeInsets.all(Tokens.spaceLg),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
+          gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Tokens.bgSurface, Tokens.bgPrimary],
+            colors: [
+              cs.surfaceContainerLow,
+              cs.surface,
+            ],
           ),
           borderRadius: BorderRadius.circular(Tokens.radiusLg),
-          border: Border.all(color: Tokens.borderLight),
+          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(title, style: Tokens.headingM),
-            const SizedBox(height: 4),
-            Text(artist, style: Tokens.bodyS.copyWith(color: Tokens.textMuted)),
+            Text(
+              title,
+              style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: Tokens.spaceXs),
+            Text(
+              artist,
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+            ),
             const SizedBox(height: Tokens.spaceMd),
             for (final bullet in bullets) ...[
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('•  ', style: Tokens.bodyM.copyWith(color: Tokens.accent)),
-                  Expanded(child: Text(bullet, style: Tokens.bodyM)),
+                  Text(
+                    '•  ',
+                    style: tt.bodyLarge?.copyWith(color: cs.primary),
+                  ),
+                  Expanded(child: Text(bullet, style: tt.bodyLarge)),
                 ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: Tokens.spaceXs + 2),
             ],
             const SizedBox(height: Tokens.spaceSm),
             Text(
               'podcast safety net',
-              style: Tokens.label.copyWith(color: Tokens.accent),
+              style: tt.labelLarge?.copyWith(color: cs.primary),
             ),
           ],
         ),
