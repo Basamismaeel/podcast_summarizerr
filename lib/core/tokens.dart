@@ -24,4 +24,18 @@ abstract final class Tokens {
 
   static const Duration durationFast = Duration(milliseconds: 200);
   static const Duration durationNormal = Duration(milliseconds: 320);
+
+  // ── Summary screen (cinema hero + body) ─────────────────────────────
+  static const Color bgPrimary = Color(0xFF070D1A);
+  static const Color bgSurface = Color(0xFF12121F);
+  static const Color bgElevated = Color(0xFF1E293B);
+  static const Color textMuted = Color(0xFF64748B);
+  static const Color accent = Color(0xFF38BDF8);
+  static const Color error = Color(0xFFF87171);
+
+  static Color get accentDim => accent.withValues(alpha: 0.12);
+  static Color get accentBorder => accent.withValues(alpha: 0.35);
+  static Color get errorDim =>
+      const Color(0xFF450A0A).withValues(alpha: 0.55);
+  static Color get borderLight => Colors.white.withValues(alpha: 0.08);
 }

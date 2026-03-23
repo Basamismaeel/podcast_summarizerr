@@ -30,7 +30,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isLast = _currentPage == 2;
+    final isLast = _currentPage == 3;
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
 
@@ -73,6 +73,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   _ProblemPage(),
                   _SolutionPage(),
                   _SummaryPage(),
+                  _HowToSavePage(),
                 ],
               ),
             ),
@@ -89,7 +90,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: List.generate(
-                      3,
+                      4,
                       (i) => AnimatedContainer(
                         duration: Tokens.durationFast,
                         curve: Tokens.springCurve,
@@ -188,12 +189,16 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 label: 'Allow Notifications',
                 fullWidth: true,
                 onTap: () async {
-                  final prefs = await SharedPreferences.getInstance();
-                  await prefs.setBool('onboarding_done', true);
-                  await NotificationService.instance.requestPermission();
-                  if (!ctx.mounted) return;
-                  if (Navigator.of(ctx).canPop()) {
-                    Navigator.of(ctx).pop();
+                  try {
+                    await NotificationService.instance.requestPermission();
+                  } catch (e, st) {
+                    debugPrint('[onboarding] requestPermission: $e\n$st');
+                  } finally {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setBool('onboarding_done', true);
+                    if (ctx.mounted && Navigator.of(ctx).canPop()) {
+                      Navigator.of(ctx).pop();
+                    }
                   }
                 },
               ),
@@ -551,6 +556,95 @@ class _SummaryPage extends StatelessWidget {
             'No microphone used. Only reads system Now Playing metadata.',
             style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
             textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HowToSavePage extends StatelessWidget {
+  const _HowToSavePage();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    Widget step(String n, String title, String body) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: Tokens.spaceMd),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: cs.primaryContainer,
+                shape: BoxShape.circle,
+              ),
+              child: Text(
+                n,
+                style: tt.labelLarge?.copyWith(
+                  color: cs.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(width: Tokens.spaceSm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: tt.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(body, style: tt.bodyMedium),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: Tokens.spaceXl,
+        vertical: Tokens.spaceLg,
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'How to save a moment',
+            style: tt.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: Tokens.spaceMd),
+          step(
+            '1',
+            'Copy a podcast link',
+            'In Spotify or Apple Podcasts: Share → Copy link.',
+          ),
+          step(
+            '2',
+            'Paste in the app',
+            'Open Podcast Safety Net → paste the link → choose the exact start and end time.',
+          ),
+          step(
+            '3',
+            'Or add manually',
+            'Use Manual Entry for title & show, pick an approximate segment.',
+          ),
+          const SizedBox(height: Tokens.spaceSm),
+          Text(
+            'On Mac you can also press ⌘S (or use the menu bar) while audio is playing.',
+            style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
           ),
         ],
       ),

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:local_notifier/local_notifier.dart';
 import 'package:macos_ui/macos_ui.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -59,9 +60,15 @@ class _MacMenuBarAppState extends ConsumerState<MacMenuBarApp>
     await windowManager.setSize(const Size(320, 400));
     await windowManager.setMinimumSize(const Size(320, 400));
     await windowManager.setMaximumSize(const Size(320, 520));
-    await windowManager.setSkipTaskbar(true);
-    await windowManager.setAlwaysOnTop(true);
-    await windowManager.hide();
+    // Show in Dock and keep the window visible — hiding on launch + blur made
+    // `flutter run` look like the app vanished after a second.
+    await windowManager.setSkipTaskbar(false);
+    await windowManager.setAlwaysOnTop(false);
+    await windowManager.show();
+    await windowManager.focus();
+    if (mounted) {
+      setState(() => _windowVisible = true);
+    }
 
     await hotKeyManager.register(
       _saveHotkey,
@@ -101,14 +108,24 @@ class _MacMenuBarAppState extends ConsumerState<MacMenuBarApp>
     }
 
     final actions = ref.read(sessionActionsProvider);
+    final prefs = await SharedPreferences.getInstance();
+    final useClip = prefs.getBool('mac_hotkey_use_clip_window') ?? true;
+    final clipSec = prefs.getInt('mac_hotkey_clip_seconds') ?? 120;
+    final start = info.positionSeconds ?? 0;
+    int? endTimeSec;
+    if (useClip && clipSec > 0) {
+      endTimeSec = start + clipSec;
+    }
     debugPrint(
-      '[_saveMoment] saving title="${info.title}" artist="${info.artist}" sourceApp="${info.sourceApp}" pos=${info.positionSeconds ?? 0}',
+      '[_saveMoment] saving title="${info.title}" artist="${info.artist}" sourceApp="${info.sourceApp}" pos=$start clip=$endTimeSec',
     );
     final id = await actions.createAndSummarize(
       title: info.title,
       artist: info.artist.isEmpty ? 'Unknown Podcast' : info.artist,
       saveMethod: SaveMethod.manual,
-      startTimeSec: info.positionSeconds ?? 0,
+      startTimeSec: start,
+      endTimeSec: endTimeSec,
+      rangeLabel: endTimeSec != null ? 'Menu bar clip' : null,
       sourceApp: info.sourceApp ?? 'mac_menu_bar',
     );
     debugPrint('[_saveMoment] created session id=$id');
@@ -149,9 +166,9 @@ class _MacMenuBarAppState extends ConsumerState<MacMenuBarApp>
 
   @override
   void onWindowBlur() {
-    debugPrint('[_window] window blur -> hiding');
-    unawaited(windowManager.hide());
-    _windowVisible = false;
+    // Do not auto-hide: losing focus (e.g. to Terminal/Xcode) was closing the
+    // window immediately after launch. Use the menu bar icon to toggle visibility.
+    debugPrint('[_window] window blur (window stays open)');
   }
 
   @override

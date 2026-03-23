@@ -81,5 +81,14 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>spotify</string>
+		<string>podcasts</string>
+		<string>itms-podcasts</string>
+		<string>itms</string>
+		<string>https</string>
+		<string>http</string>
+	</array>
 </dict>
 </plist>

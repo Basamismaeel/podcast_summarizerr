@@ -26,7 +26,13 @@ class ListeningSessions extends Table {
   TextColumn get errorMessage => text().nullable()();
   TextColumn get episodeId => text().nullable()();
   TextColumn get episodeUrl => text().nullable()();
+  /// Pasted open.spotify.com / podcasts.apple.com link (for “Open in …” buttons).
+  TextColumn get sourceShareUrl => text().nullable()();
   TextColumn get artworkUrl => text().nullable()();
+  /// Transcription backend: `deepgram` | `taddy` (affects timestamp accuracy UI).
+  TextColumn get transcriptSource => text().nullable()();
+  /// Comma-separated labels, e.g. `work,ideas`.
+  TextColumn get tags => text().nullable()();
   IntColumn get createdAt => integer()();
   IntColumn get updatedAt => integer()();
 
@@ -41,13 +47,22 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
         onUpgrade: (m, from, to) async {
           if (from < 2) {
             await m.addColumn(listeningSessions, listeningSessions.artworkUrl);
+          }
+          if (from < 3) {
+            await m.addColumn(
+                listeningSessions, listeningSessions.transcriptSource);
+            await m.addColumn(listeningSessions, listeningSessions.tags);
+          }
+          if (from < 4) {
+            await m.addColumn(
+                listeningSessions, listeningSessions.sourceShareUrl);
           }
         },
       );

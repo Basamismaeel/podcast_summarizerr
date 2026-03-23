@@ -19,7 +19,7 @@ class QuoteReveal extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
 
-    return PSNCard(
+    return PSNCard.glass(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

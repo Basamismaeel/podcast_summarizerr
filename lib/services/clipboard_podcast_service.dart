@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+import 'spotify_episode_service.dart';
+
 class ClipboardPodcastInfo {
   const ClipboardPodcastInfo({
     required this.episodeTitle,
@@ -88,6 +90,7 @@ class ClipboardPodcastService {
 
       final info = _tryParseApplePodcastsUrl(text) ??
           _tryParseSpotifyUrl(text) ??
+          _tryParseSpotifyEpisodeFromFreeText(text) ??
           await _tryParseAudibleUrl(text);
 
       if (info != null) {
@@ -201,6 +204,24 @@ class ClipboardPodcastService {
     );
   }
 
+  /// Share sheets often put extra text before/after the URL — still resolve episode.
+  static ClipboardPodcastInfo? _tryParseSpotifyEpisodeFromFreeText(String text) {
+    final id = SpotifyEpisodeService.extractEpisodeIdFromText(text);
+    if (id == null) return null;
+    // Share text may not be a single parseable URI — grab ?t= from anywhere.
+    final tMatch = RegExp(r'[?&]t=(\d+)').firstMatch(text);
+    final timestamp =
+        tMatch != null ? int.tryParse(tMatch.group(1)!) ?? 0 : 0;
+    return ClipboardPodcastInfo(
+      episodeTitle: 'Spotify Episode',
+      podcastName: '',
+      timestampSeconds: timestamp,
+      sourceUrl: text.trim(),
+      source: 'spotify',
+      spotifyEpisodeId: id,
+    );
+  }
+
   /// Parses Spotify URLs like:
   /// https://open.spotify.com/episode/4rOoJ6Egrf8K2IrywzwOMk?t=757
   static ClipboardPodcastInfo? _tryParseSpotifyUrl(String text) {
@@ -234,6 +255,11 @@ class ClipboardPodcastService {
   /// Audible links — audio is DRM-protected but most Audible podcasts are also
   /// on Apple Podcasts / Spotify with a public RSS feed. We extract the title
   /// from the URL slug (or scrape the page) and let Taddy find the episode.
+  ///
+  /// Path slugs are often generic or misleading; `slugs.last` alone picked the
+  /// wrong segment for some audiobook URLs. We skip locale crumbs, join all
+  /// content slugs for a better search string, and prefer `og:title` / `<title>`
+  /// from the **exact shared URL** (includes `?asin=` etc.) when plausible.
   static Future<ClipboardPodcastInfo?> _tryParseAudibleUrl(String text) async {
     final uri = Uri.tryParse(text.trim());
     if (uri == null || !uri.hasScheme) return null;
@@ -242,34 +268,64 @@ class ClipboardPodcastService {
 
     final asinPattern = RegExp(r'^B[0-9A-Z]{9}$');
 
-    var title = '';
-    String? asin;
     final segs = uri.pathSegments.where((s) => s.isNotEmpty).toList();
 
-    // Collect all title-slugs and ASINs from path segments.
+    const skipSegs = {
+      'pd',
+      'ep',
+      'podcast',
+      'podcasts',
+      'episode',
+      'episodes',
+      'audible',
+      'series',
+    };
+    // Regional / locale path crumbs (wrong "title" if treated as book name).
+    const localeSegs = {
+      'us',
+      'uk',
+      'gb',
+      'de',
+      'fr',
+      'es',
+      'it',
+      'jp',
+      'ca',
+      'au',
+      'in',
+      'nl',
+      'br',
+      'pl',
+      'mx',
+      'ie',
+      'nz',
+      'sg',
+      'eu',
+      'global',
+    };
+
     final slugs = <String>[];
     for (final s in segs) {
-      if (const {'pd', 'ep', 'podcast', 'podcasts', 'episode', 'episodes'}
-          .contains(s.toLowerCase())) {
+      final lower = s.toLowerCase();
+      if (skipSegs.contains(lower) || localeSegs.contains(lower)) {
         continue;
       }
-      if (asinPattern.hasMatch(s)) {
-        asin = s;
-      } else {
+      if (!asinPattern.hasMatch(s)) {
         slugs.add(s);
       }
     }
 
-    // Use the last slug (closest to the ASIN) as the title.
+    // Fallback title from path: use all content slugs (author + title in path).
+    var titleFromSlug = '';
     if (slugs.isNotEmpty) {
-      title = _slugToTitle(slugs.last);
+      titleFromSlug = slugs.map(_slugToTitle).join(' ');
     }
 
-    // If no readable slug found (URL was just /podcast/ASIN), scrape the page.
-    if (title.isEmpty && asin != null) {
-      title = await _scrapeAudibleTitle(text.trim()) ?? '';
+    // Prefer HTML title for the exact shared page (fixes wrong slug vs product).
+    var title = await _scrapeAudibleTitle(text.trim()) ?? '';
+    if (!_isPlausibleAudibleTitle(title)) {
+      title = titleFromSlug;
     }
-
     if (title.isEmpty) title = 'Audible Episode';
 
     final tParam = uri.queryParameters['t'];
@@ -331,6 +387,15 @@ class ClipboardPodcastService {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Reject empty / site-only titles from bad scrapes.
+  static bool _isPlausibleAudibleTitle(String s) {
+    final t = s.trim();
+    if (t.length < 4) return false;
+    final lower = t.toLowerCase();
+    if (lower == 'audible' || lower.startsWith('audible.com')) return false;
+    return true;
   }
 
   static String _slugToTitle(String slug) {

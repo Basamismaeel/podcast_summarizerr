@@ -67,6 +67,35 @@ class NotificationService {
   Future<bool> requestPermission() async {
     if (kIsWeb) return true;
 
+    // macOS (and iOS): use flutter_local_notifications — permission_handler's
+    // Permission.notification does not reliably show the system prompt on macOS.
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      final mac = _plugin.resolvePlatformSpecificImplementation<
+          MacOSFlutterLocalNotificationsPlugin>();
+      if (mac == null) {
+        debugPrint('[NotificationService] MacOSFlutterLocalNotificationsPlugin is null');
+        return false;
+      }
+      final granted = await mac.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      return granted ?? false;
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      final ios = _plugin.resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin>();
+      if (ios == null) return false;
+      final granted = await ios.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      return granted ?? false;
+    }
+
     final status = await Permission.notification.status;
     if (status.isGranted) return true;
     if (status.isPermanentlyDenied) return false;
@@ -100,13 +129,16 @@ class NotificationService {
       presentSound: false,
     );
 
+    final isAppleMobile = defaultTargetPlatform == TargetPlatform.iOS;
     await _plugin.show(
       _bannerNotifId,
-      defaultTargetPlatform == TargetPlatform.iOS ? '🎙 $title' : title,
-      defaultTargetPlatform == TargetPlatform.iOS
-          ? 'Tap to save this moment'
-          : artist,
-      NotificationDetails(android: androidDetails, iOS: iosDetails),
+      isAppleMobile ? '🎙 $title' : title,
+      isAppleMobile ? 'Tap to save this moment' : artist,
+      NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+        macOS: iosDetails,
+      ),
       payload: 'SAVE_MOMENT',
     );
   }
@@ -196,7 +228,11 @@ class NotificationService {
       _feedbackNotifId,
       title,
       body,
-      NotificationDetails(android: androidDetails, iOS: iosDetails),
+      NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+        macOS: iosDetails,
+      ),
       payload: payload,
     );
   }

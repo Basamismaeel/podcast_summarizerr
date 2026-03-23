@@ -76,6 +76,33 @@ class SpotifyEpisodeService {
   static bool get isConfigured =>
       _clientId.isNotEmpty && _clientSecret.isNotEmpty;
 
+  /// Pulls a Spotify **episode** id from free text: full URLs, `spotify:` URIs,
+  /// or share blurbs like "Listen on Spotify — https://open.spotify.com/episode/…".
+  ///
+  /// Returns null if no episode id is found. Does not match `/show/` links.
+  static String? extractEpisodeIdFromText(String? text) {
+    if (text == null) return null;
+    final t = text.trim();
+    if (t.isEmpty) return null;
+
+    final spotifyUri = RegExp(
+      r'spotify:episode:([A-Za-z0-9]{15,})',
+      caseSensitive: false,
+    );
+    final mUri = spotifyUri.firstMatch(t);
+    if (mUri != null) return mUri.group(1);
+
+    // open.spotify.com/episode/{id} with optional locale: /intl-xx/episode/
+    final web = RegExp(
+      r'open\.spotify\.com/(?:intl-[a-z]{2}/)?episode/([A-Za-z0-9]{15,})',
+      caseSensitive: false,
+    );
+    final mWeb = web.firstMatch(t);
+    if (mWeb != null) return mWeb.group(1);
+
+    return null;
+  }
+
   /// Fetches episode metadata. Uses the **oEmbed API** (no auth needed) first,
   /// then falls back to the authenticated Web API if oEmbed fails.
   static Future<SpotifyEpisodeInfo?> fetchEpisode(String spotifyEpisodeId) async {

@@ -20,6 +20,8 @@ class AppSettings {
     this.onboardingComplete = false,
     this.themePreference = AppThemePreference.system,
     this.accentColorArgb = 0xFF007AFF,
+    this.macHotkeyUseClipWindow = true,
+    this.macHotkeyClipSeconds = 120,
   });
 
   final SummaryStyle defaultSummaryStyle;
@@ -32,6 +34,10 @@ class AppSettings {
   /// Stored as 32-bit ARGB (e.g. 0xFF007AFF).
   final int accentColorArgb;
 
+  /// macOS ⌘S: save a fixed-length clip from the playhead (vs rest of episode).
+  final bool macHotkeyUseClipWindow;
+  final int macHotkeyClipSeconds;
+
   Color get accentColor => Color(accentColorArgb);
 
   AppSettings copyWith({
@@ -43,6 +49,8 @@ class AppSettings {
     bool? onboardingComplete,
     AppThemePreference? themePreference,
     int? accentColorArgb,
+    bool? macHotkeyUseClipWindow,
+    int? macHotkeyClipSeconds,
   }) {
     return AppSettings(
       defaultSummaryStyle: defaultSummaryStyle ?? this.defaultSummaryStyle,
@@ -53,6 +61,9 @@ class AppSettings {
       onboardingComplete: onboardingComplete ?? this.onboardingComplete,
       themePreference: themePreference ?? this.themePreference,
       accentColorArgb: accentColorArgb ?? this.accentColorArgb,
+      macHotkeyUseClipWindow:
+          macHotkeyUseClipWindow ?? this.macHotkeyUseClipWindow,
+      macHotkeyClipSeconds: macHotkeyClipSeconds ?? this.macHotkeyClipSeconds,
     );
   }
 }
@@ -78,6 +89,8 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
       themePreference:
           AppThemePreference.fromStorage(prefs.getString('theme_preference')),
       accentColorArgb: prefs.getInt('accent_color') ?? _defaultAccent,
+      macHotkeyUseClipWindow: prefs.getBool('mac_hotkey_use_clip_window') ?? true,
+      macHotkeyClipSeconds: prefs.getInt('mac_hotkey_clip_seconds') ?? 120,
     );
   }
 
@@ -128,5 +141,18 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
     state = state.copyWith(accentColorArgb: argb);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('accent_color', argb);
+  }
+
+  Future<void> setMacHotkeyUseClipWindow(bool value) async {
+    state = state.copyWith(macHotkeyUseClipWindow: value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('mac_hotkey_use_clip_window', value);
+  }
+
+  Future<void> setMacHotkeyClipSeconds(int seconds) async {
+    final s = seconds.clamp(30, 3600);
+    state = state.copyWith(macHotkeyClipSeconds: s);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('mac_hotkey_clip_seconds', s);
   }
 }

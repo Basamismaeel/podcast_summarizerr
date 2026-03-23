@@ -238,12 +238,43 @@ class $ListeningSessionsTable extends ListeningSessions
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _sourceShareUrlMeta = const VerificationMeta(
+    'sourceShareUrl',
+  );
+  @override
+  late final GeneratedColumn<String> sourceShareUrl = GeneratedColumn<String>(
+    'source_share_url',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _artworkUrlMeta = const VerificationMeta(
     'artworkUrl',
   );
   @override
   late final GeneratedColumn<String> artworkUrl = GeneratedColumn<String>(
     'artwork_url',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _transcriptSourceMeta = const VerificationMeta(
+    'transcriptSource',
+  );
+  @override
+  late final GeneratedColumn<String> transcriptSource = GeneratedColumn<String>(
+    'transcript_source',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _tagsMeta = const VerificationMeta('tags');
+  @override
+  late final GeneratedColumn<String> tags = GeneratedColumn<String>(
+    'tags',
     aliasedName,
     true,
     type: DriftSqlType.string,
@@ -295,7 +326,10 @@ class $ListeningSessionsTable extends ListeningSessions
     errorMessage,
     episodeId,
     episodeUrl,
+    sourceShareUrl,
     artworkUrl,
+    transcriptSource,
+    tags,
     createdAt,
     updatedAt,
   ];
@@ -465,10 +499,34 @@ class $ListeningSessionsTable extends ListeningSessions
         episodeUrl.isAcceptableOrUnknown(data['episode_url']!, _episodeUrlMeta),
       );
     }
+    if (data.containsKey('source_share_url')) {
+      context.handle(
+        _sourceShareUrlMeta,
+        sourceShareUrl.isAcceptableOrUnknown(
+          data['source_share_url']!,
+          _sourceShareUrlMeta,
+        ),
+      );
+    }
     if (data.containsKey('artwork_url')) {
       context.handle(
         _artworkUrlMeta,
         artworkUrl.isAcceptableOrUnknown(data['artwork_url']!, _artworkUrlMeta),
+      );
+    }
+    if (data.containsKey('transcript_source')) {
+      context.handle(
+        _transcriptSourceMeta,
+        transcriptSource.isAcceptableOrUnknown(
+          data['transcript_source']!,
+          _transcriptSourceMeta,
+        ),
+      );
+    }
+    if (data.containsKey('tags')) {
+      context.handle(
+        _tagsMeta,
+        tags.isAcceptableOrUnknown(data['tags']!, _tagsMeta),
       );
     }
     if (data.containsKey('created_at')) {
@@ -584,9 +642,21 @@ class $ListeningSessionsTable extends ListeningSessions
         DriftSqlType.string,
         data['${effectivePrefix}episode_url'],
       ),
+      sourceShareUrl: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source_share_url'],
+      ),
       artworkUrl: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}artwork_url'],
+      ),
+      transcriptSource: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}transcript_source'],
+      ),
+      tags: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}tags'],
       ),
       createdAt: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
@@ -629,7 +699,16 @@ class ListeningSession extends DataClass
   final String? errorMessage;
   final String? episodeId;
   final String? episodeUrl;
+
+  /// Pasted open.spotify.com / podcasts.apple.com link (for “Open in …” buttons).
+  final String? sourceShareUrl;
   final String? artworkUrl;
+
+  /// Transcription backend: `deepgram` | `taddy` (affects timestamp accuracy UI).
+  final String? transcriptSource;
+
+  /// Comma-separated labels, e.g. `work,ideas`.
+  final String? tags;
   final int createdAt;
   final int updatedAt;
   const ListeningSession({
@@ -655,7 +734,10 @@ class ListeningSession extends DataClass
     this.errorMessage,
     this.episodeId,
     this.episodeUrl,
+    this.sourceShareUrl,
     this.artworkUrl,
+    this.transcriptSource,
+    this.tags,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -716,8 +798,17 @@ class ListeningSession extends DataClass
     if (!nullToAbsent || episodeUrl != null) {
       map['episode_url'] = Variable<String>(episodeUrl);
     }
+    if (!nullToAbsent || sourceShareUrl != null) {
+      map['source_share_url'] = Variable<String>(sourceShareUrl);
+    }
     if (!nullToAbsent || artworkUrl != null) {
       map['artwork_url'] = Variable<String>(artworkUrl);
+    }
+    if (!nullToAbsent || transcriptSource != null) {
+      map['transcript_source'] = Variable<String>(transcriptSource);
+    }
+    if (!nullToAbsent || tags != null) {
+      map['tags'] = Variable<String>(tags);
     }
     map['created_at'] = Variable<int>(createdAt);
     map['updated_at'] = Variable<int>(updatedAt);
@@ -780,9 +871,16 @@ class ListeningSession extends DataClass
       episodeUrl: episodeUrl == null && nullToAbsent
           ? const Value.absent()
           : Value(episodeUrl),
+      sourceShareUrl: sourceShareUrl == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sourceShareUrl),
       artworkUrl: artworkUrl == null && nullToAbsent
           ? const Value.absent()
           : Value(artworkUrl),
+      transcriptSource: transcriptSource == null && nullToAbsent
+          ? const Value.absent()
+          : Value(transcriptSource),
+      tags: tags == null && nullToAbsent ? const Value.absent() : Value(tags),
       createdAt: Value(createdAt),
       updatedAt: Value(updatedAt),
     );
@@ -816,7 +914,10 @@ class ListeningSession extends DataClass
       errorMessage: serializer.fromJson<String?>(json['errorMessage']),
       episodeId: serializer.fromJson<String?>(json['episodeId']),
       episodeUrl: serializer.fromJson<String?>(json['episodeUrl']),
+      sourceShareUrl: serializer.fromJson<String?>(json['sourceShareUrl']),
       artworkUrl: serializer.fromJson<String?>(json['artworkUrl']),
+      transcriptSource: serializer.fromJson<String?>(json['transcriptSource']),
+      tags: serializer.fromJson<String?>(json['tags']),
       createdAt: serializer.fromJson<int>(json['createdAt']),
       updatedAt: serializer.fromJson<int>(json['updatedAt']),
     );
@@ -847,7 +948,10 @@ class ListeningSession extends DataClass
       'errorMessage': serializer.toJson<String?>(errorMessage),
       'episodeId': serializer.toJson<String?>(episodeId),
       'episodeUrl': serializer.toJson<String?>(episodeUrl),
+      'sourceShareUrl': serializer.toJson<String?>(sourceShareUrl),
       'artworkUrl': serializer.toJson<String?>(artworkUrl),
+      'transcriptSource': serializer.toJson<String?>(transcriptSource),
+      'tags': serializer.toJson<String?>(tags),
       'createdAt': serializer.toJson<int>(createdAt),
       'updatedAt': serializer.toJson<int>(updatedAt),
     };
@@ -876,7 +980,10 @@ class ListeningSession extends DataClass
     Value<String?> errorMessage = const Value.absent(),
     Value<String?> episodeId = const Value.absent(),
     Value<String?> episodeUrl = const Value.absent(),
+    Value<String?> sourceShareUrl = const Value.absent(),
     Value<String?> artworkUrl = const Value.absent(),
+    Value<String?> transcriptSource = const Value.absent(),
+    Value<String?> tags = const Value.absent(),
     int? createdAt,
     int? updatedAt,
   }) => ListeningSession(
@@ -902,7 +1009,14 @@ class ListeningSession extends DataClass
     errorMessage: errorMessage.present ? errorMessage.value : this.errorMessage,
     episodeId: episodeId.present ? episodeId.value : this.episodeId,
     episodeUrl: episodeUrl.present ? episodeUrl.value : this.episodeUrl,
+    sourceShareUrl: sourceShareUrl.present
+        ? sourceShareUrl.value
+        : this.sourceShareUrl,
     artworkUrl: artworkUrl.present ? artworkUrl.value : this.artworkUrl,
+    transcriptSource: transcriptSource.present
+        ? transcriptSource.value
+        : this.transcriptSource,
+    tags: tags.present ? tags.value : this.tags,
     createdAt: createdAt ?? this.createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
   );
@@ -946,9 +1060,16 @@ class ListeningSession extends DataClass
       episodeUrl: data.episodeUrl.present
           ? data.episodeUrl.value
           : this.episodeUrl,
+      sourceShareUrl: data.sourceShareUrl.present
+          ? data.sourceShareUrl.value
+          : this.sourceShareUrl,
       artworkUrl: data.artworkUrl.present
           ? data.artworkUrl.value
           : this.artworkUrl,
+      transcriptSource: data.transcriptSource.present
+          ? data.transcriptSource.value
+          : this.transcriptSource,
+      tags: data.tags.present ? data.tags.value : this.tags,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
     );
@@ -979,7 +1100,10 @@ class ListeningSession extends DataClass
           ..write('errorMessage: $errorMessage, ')
           ..write('episodeId: $episodeId, ')
           ..write('episodeUrl: $episodeUrl, ')
+          ..write('sourceShareUrl: $sourceShareUrl, ')
           ..write('artworkUrl: $artworkUrl, ')
+          ..write('transcriptSource: $transcriptSource, ')
+          ..write('tags: $tags, ')
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt')
           ..write(')'))
@@ -1010,7 +1134,10 @@ class ListeningSession extends DataClass
     errorMessage,
     episodeId,
     episodeUrl,
+    sourceShareUrl,
     artworkUrl,
+    transcriptSource,
+    tags,
     createdAt,
     updatedAt,
   ]);
@@ -1040,7 +1167,10 @@ class ListeningSession extends DataClass
           other.errorMessage == this.errorMessage &&
           other.episodeId == this.episodeId &&
           other.episodeUrl == this.episodeUrl &&
+          other.sourceShareUrl == this.sourceShareUrl &&
           other.artworkUrl == this.artworkUrl &&
+          other.transcriptSource == this.transcriptSource &&
+          other.tags == this.tags &&
           other.createdAt == this.createdAt &&
           other.updatedAt == this.updatedAt);
 }
@@ -1068,7 +1198,10 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
   final Value<String?> errorMessage;
   final Value<String?> episodeId;
   final Value<String?> episodeUrl;
+  final Value<String?> sourceShareUrl;
   final Value<String?> artworkUrl;
+  final Value<String?> transcriptSource;
+  final Value<String?> tags;
   final Value<int> createdAt;
   final Value<int> updatedAt;
   final Value<int> rowid;
@@ -1095,7 +1228,10 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
     this.errorMessage = const Value.absent(),
     this.episodeId = const Value.absent(),
     this.episodeUrl = const Value.absent(),
+    this.sourceShareUrl = const Value.absent(),
     this.artworkUrl = const Value.absent(),
+    this.transcriptSource = const Value.absent(),
+    this.tags = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
     this.rowid = const Value.absent(),
@@ -1123,7 +1259,10 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
     this.errorMessage = const Value.absent(),
     this.episodeId = const Value.absent(),
     this.episodeUrl = const Value.absent(),
+    this.sourceShareUrl = const Value.absent(),
     this.artworkUrl = const Value.absent(),
+    this.transcriptSource = const Value.absent(),
+    this.tags = const Value.absent(),
     required int createdAt,
     required int updatedAt,
     this.rowid = const Value.absent(),
@@ -1157,7 +1296,10 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
     Expression<String>? errorMessage,
     Expression<String>? episodeId,
     Expression<String>? episodeUrl,
+    Expression<String>? sourceShareUrl,
     Expression<String>? artworkUrl,
+    Expression<String>? transcriptSource,
+    Expression<String>? tags,
     Expression<int>? createdAt,
     Expression<int>? updatedAt,
     Expression<int>? rowid,
@@ -1185,7 +1327,10 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
       if (errorMessage != null) 'error_message': errorMessage,
       if (episodeId != null) 'episode_id': episodeId,
       if (episodeUrl != null) 'episode_url': episodeUrl,
+      if (sourceShareUrl != null) 'source_share_url': sourceShareUrl,
       if (artworkUrl != null) 'artwork_url': artworkUrl,
+      if (transcriptSource != null) 'transcript_source': transcriptSource,
+      if (tags != null) 'tags': tags,
       if (createdAt != null) 'created_at': createdAt,
       if (updatedAt != null) 'updated_at': updatedAt,
       if (rowid != null) 'rowid': rowid,
@@ -1215,7 +1360,10 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
     Value<String?>? errorMessage,
     Value<String?>? episodeId,
     Value<String?>? episodeUrl,
+    Value<String?>? sourceShareUrl,
     Value<String?>? artworkUrl,
+    Value<String?>? transcriptSource,
+    Value<String?>? tags,
     Value<int>? createdAt,
     Value<int>? updatedAt,
     Value<int>? rowid,
@@ -1243,7 +1391,10 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
       errorMessage: errorMessage ?? this.errorMessage,
       episodeId: episodeId ?? this.episodeId,
       episodeUrl: episodeUrl ?? this.episodeUrl,
+      sourceShareUrl: sourceShareUrl ?? this.sourceShareUrl,
       artworkUrl: artworkUrl ?? this.artworkUrl,
+      transcriptSource: transcriptSource ?? this.transcriptSource,
+      tags: tags ?? this.tags,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       rowid: rowid ?? this.rowid,
@@ -1319,8 +1470,17 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
     if (episodeUrl.present) {
       map['episode_url'] = Variable<String>(episodeUrl.value);
     }
+    if (sourceShareUrl.present) {
+      map['source_share_url'] = Variable<String>(sourceShareUrl.value);
+    }
     if (artworkUrl.present) {
       map['artwork_url'] = Variable<String>(artworkUrl.value);
+    }
+    if (transcriptSource.present) {
+      map['transcript_source'] = Variable<String>(transcriptSource.value);
+    }
+    if (tags.present) {
+      map['tags'] = Variable<String>(tags.value);
     }
     if (createdAt.present) {
       map['created_at'] = Variable<int>(createdAt.value);
@@ -1359,7 +1519,10 @@ class ListeningSessionsCompanion extends UpdateCompanion<ListeningSession> {
           ..write('errorMessage: $errorMessage, ')
           ..write('episodeId: $episodeId, ')
           ..write('episodeUrl: $episodeUrl, ')
+          ..write('sourceShareUrl: $sourceShareUrl, ')
           ..write('artworkUrl: $artworkUrl, ')
+          ..write('transcriptSource: $transcriptSource, ')
+          ..write('tags: $tags, ')
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
           ..write('rowid: $rowid')
@@ -1404,7 +1567,10 @@ typedef $$ListeningSessionsTableCreateCompanionBuilder =
       Value<String?> errorMessage,
       Value<String?> episodeId,
       Value<String?> episodeUrl,
+      Value<String?> sourceShareUrl,
       Value<String?> artworkUrl,
+      Value<String?> transcriptSource,
+      Value<String?> tags,
       required int createdAt,
       required int updatedAt,
       Value<int> rowid,
@@ -1433,7 +1599,10 @@ typedef $$ListeningSessionsTableUpdateCompanionBuilder =
       Value<String?> errorMessage,
       Value<String?> episodeId,
       Value<String?> episodeUrl,
+      Value<String?> sourceShareUrl,
       Value<String?> artworkUrl,
+      Value<String?> transcriptSource,
+      Value<String?> tags,
       Value<int> createdAt,
       Value<int> updatedAt,
       Value<int> rowid,
@@ -1558,8 +1727,23 @@ class $$ListeningSessionsTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<String> get sourceShareUrl => $composableBuilder(
+    column: $table.sourceShareUrl,
+    builder: (column) => ColumnFilters(column),
+  );
+
   ColumnFilters<String> get artworkUrl => $composableBuilder(
     column: $table.artworkUrl,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get transcriptSource => $composableBuilder(
+    column: $table.transcriptSource,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get tags => $composableBuilder(
+    column: $table.tags,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1693,8 +1877,23 @@ class $$ListeningSessionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get sourceShareUrl => $composableBuilder(
+    column: $table.sourceShareUrl,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get artworkUrl => $composableBuilder(
     column: $table.artworkUrl,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get transcriptSource => $composableBuilder(
+    column: $table.transcriptSource,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get tags => $composableBuilder(
+    column: $table.tags,
     builder: (column) => ColumnOrderings(column),
   );
 
@@ -1800,10 +1999,23 @@ class $$ListeningSessionsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get sourceShareUrl => $composableBuilder(
+    column: $table.sourceShareUrl,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<String> get artworkUrl => $composableBuilder(
     column: $table.artworkUrl,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get transcriptSource => $composableBuilder(
+    column: $table.transcriptSource,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get tags =>
+      $composableBuilder(column: $table.tags, builder: (column) => column);
 
   GeneratedColumn<int> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
@@ -1874,7 +2086,10 @@ class $$ListeningSessionsTableTableManager
                 Value<String?> errorMessage = const Value.absent(),
                 Value<String?> episodeId = const Value.absent(),
                 Value<String?> episodeUrl = const Value.absent(),
+                Value<String?> sourceShareUrl = const Value.absent(),
                 Value<String?> artworkUrl = const Value.absent(),
+                Value<String?> transcriptSource = const Value.absent(),
+                Value<String?> tags = const Value.absent(),
                 Value<int> createdAt = const Value.absent(),
                 Value<int> updatedAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
@@ -1901,7 +2116,10 @@ class $$ListeningSessionsTableTableManager
                 errorMessage: errorMessage,
                 episodeId: episodeId,
                 episodeUrl: episodeUrl,
+                sourceShareUrl: sourceShareUrl,
                 artworkUrl: artworkUrl,
+                transcriptSource: transcriptSource,
+                tags: tags,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
                 rowid: rowid,
@@ -1930,7 +2148,10 @@ class $$ListeningSessionsTableTableManager
                 Value<String?> errorMessage = const Value.absent(),
                 Value<String?> episodeId = const Value.absent(),
                 Value<String?> episodeUrl = const Value.absent(),
+                Value<String?> sourceShareUrl = const Value.absent(),
                 Value<String?> artworkUrl = const Value.absent(),
+                Value<String?> transcriptSource = const Value.absent(),
+                Value<String?> tags = const Value.absent(),
                 required int createdAt,
                 required int updatedAt,
                 Value<int> rowid = const Value.absent(),
@@ -1957,7 +2178,10 @@ class $$ListeningSessionsTableTableManager
                 errorMessage: errorMessage,
                 episodeId: episodeId,
                 episodeUrl: episodeUrl,
+                sourceShareUrl: sourceShareUrl,
                 artworkUrl: artworkUrl,
+                transcriptSource: transcriptSource,
+                tags: tags,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
                 rowid: rowid,

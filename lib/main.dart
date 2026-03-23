@@ -5,38 +5,54 @@ import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
+import 'core/env_value.dart';
 import 'database/database.dart';
-import 'screens/menu_bar/menu_bar_app.dart';
 import 'services/notification_service.dart';
 import 'services/spotify_episode_service.dart';
 
 /// Loads `.env` from the asset bundle with fixes for common editor issues:
 /// - UTF-8 BOM on the first line (would otherwise break the first key name)
 /// - Windows CRLF line endings
-/// Then fills missing Spotify keys from [Platform.environment] (e.g. IDE run config).
+/// Then normalizes values (quotes/whitespace) and fills missing keys from
+/// [Platform.environment] (Spotify + API keys — useful on desktop/CI).
 Future<void> _loadDotenv() async {
   try {
     final raw = await rootBundle.loadString('.env');
     if (raw.isEmpty) {
       await dotenv.load(fileName: '.env', isOptional: true);
+      _normalizeLoadedDotenvValues();
+      _mergeSpotifyFromPlatform();
+      _mergeApiKeysFromPlatform();
       return;
     }
     final noBom = raw.replaceFirst(RegExp(r'^\uFEFF'), '');
     final normalized = noBom.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
     dotenv.testLoad(fileInput: normalized);
+    _normalizeLoadedDotenvValues();
     _mergeSpotifyFromPlatform();
+    _mergeApiKeysFromPlatform();
   } catch (e, st) {
     debugPrint('[main] dotenv testLoad failed, falling back: $e\n$st');
     try {
       await dotenv.load(fileName: '.env', isOptional: true);
+      _normalizeLoadedDotenvValues();
       _mergeSpotifyFromPlatform();
+      _mergeApiKeysFromPlatform();
     } catch (e2, st2) {
       debugPrint('[main] dotenv load skipped: $e2\n$st2');
     }
+  }
+}
+
+/// Re-write dotenv entries so quoted values and stray whitespace don't break keys.
+void _normalizeLoadedDotenvValues() {
+  if (!dotenv.isInitialized) return;
+  for (final e in dotenv.env.entries.toList()) {
+    final n = normalizeDotenvValue(e.value);
+    if (n != e.value) dotenv.env[e.key] = n;
   }
 }
 
@@ -50,10 +66,27 @@ void _mergeSpotifyFromPlatform() {
   for (final key in keys) {
     final fromPlat = Platform.environment[key]?.trim();
     if (fromPlat == null || fromPlat.isEmpty) continue;
-    final cur = dotenv.env[key]?.trim();
-    if (cur == null || cur.isEmpty) {
+    final cur = normalizeDotenvValue(dotenv.env[key]);
+    if (cur.isEmpty) {
       dotenv.env[key] = fromPlat;
     }
+  }
+}
+
+/// Fill API keys from the process environment when `.env` omits them (desktop/CI).
+void _mergeApiKeysFromPlatform() {
+  if (!dotenv.isInitialized) return;
+  const keys = [
+    'GEMINI_API_KEY',
+    'DEEPGRAM_API_KEY',
+    'TADDY_API_KEY',
+    'TADDY_USER_ID',
+  ];
+  for (final key in keys) {
+    final fromPlat = normalizeDotenvValue(Platform.environment[key]);
+    if (fromPlat.isEmpty) continue;
+    final cur = normalizeDotenvValue(dotenv.env[key]);
+    if (cur.isEmpty) dotenv.env[key] = fromPlat;
   }
 }
 
@@ -77,17 +110,9 @@ Future<void> main() async {
 
   NotificationService.instance.attachDatabase(appDatabaseSingleton);
 
+  // Same full Material UI as iOS/Android; window_manager sizes the desktop window.
   if (Platform.isMacOS) {
     await windowManager.ensureInitialized();
-    try {
-      await trayManager.setIcon('assets/tray_icon.png');
-    } catch (_) {}
-    runApp(
-      const ProviderScope(
-        child: MacMenuBarApp(),
-      ),
-    );
-    return;
   }
 
   final prefs = await SharedPreferences.getInstance();

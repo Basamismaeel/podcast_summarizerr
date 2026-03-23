@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/snipd_style.dart';
 import '../../core/tokens.dart';
 
 /// Placeholder for future playlists / collections. Same tab shell as Home.
@@ -9,15 +10,15 @@ class LibraryScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
 
     return Scaffold(
-      backgroundColor: cs.surface,
+      backgroundColor: SnipdStyle.bgDeep,
       appBar: AppBar(
         title: const Text('Library'),
         automaticallyImplyLeading: false,
-        backgroundColor: cs.surface,
+        backgroundColor: SnipdStyle.bgDeep,
+        foregroundColor: SnipdStyle.title,
         surfaceTintColor: Colors.transparent,
       ),
       body: ListView(
@@ -25,13 +26,16 @@ class LibraryScreen extends StatelessWidget {
         children: [
           Text(
             'Organize your moments',
-            style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+            style: tt.titleLarge?.copyWith(
+              fontWeight: FontWeight.w600,
+              color: SnipdStyle.title,
+            ),
           ),
           const SizedBox(height: Tokens.spaceSm),
           Text(
             'Collections, playlists, and exports are on the way. '
             'For now, all saved moments live on the Home tab.',
-            style: tt.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
+            style: tt.bodyLarge?.copyWith(color: SnipdStyle.meta),
           ),
           const SizedBox(height: Tokens.spaceLg),
           FilledButton.tonalIcon(

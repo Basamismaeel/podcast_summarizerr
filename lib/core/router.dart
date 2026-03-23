@@ -1,17 +1,17 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../screens/auth/auth_screen.dart';
-import '../screens/design_preview/design_preview_screen.dart';
 import '../screens/home/home_screen.dart';
 import '../screens/library/library_screen.dart';
 import '../screens/manual_entry/manual_entry_screen.dart';
 import '../screens/onboarding/onboarding_screen.dart';
+import '../screens/search/search_placeholder_screen.dart';
 import '../screens/settings/settings_screen.dart';
 import '../screens/shell/main_shell_scaffold.dart';
 import '../screens/summary/summary_screen.dart';
+import 'router_transitions.dart';
 
 final GlobalKey<NavigatorState> _rootNavigatorKey =
     GlobalKey<NavigatorState>(debugLabel: 'root');
@@ -69,27 +69,38 @@ GoRouter createRouter(SharedPreferences prefs) {
       GoRoute(
         path: '/summary/:id',
         parentNavigatorKey: _rootNavigatorKey,
-        builder: (context, state) {
+        pageBuilder: (context, state) {
           final id = state.pathParameters['id']!;
-          return SummaryScreen(sessionId: id);
+          return psnTransitionPage<void>(
+            key: state.pageKey,
+            child: SummaryScreen(sessionId: id),
+          );
         },
       ),
       GoRoute(
         path: '/manual-entry',
         parentNavigatorKey: _rootNavigatorKey,
-        builder: (context, state) => const ManualEntryScreen(),
+        pageBuilder: (context, state) => psnTransitionPage<void>(
+          key: state.pageKey,
+          child: const ManualEntryScreen(),
+        ),
       ),
       GoRoute(
         path: '/auth',
         parentNavigatorKey: _rootNavigatorKey,
-        builder: (context, state) => const AuthScreen(),
-      ),
-      if (kDebugMode)
-        GoRoute(
-          path: '/design-preview',
-          parentNavigatorKey: _rootNavigatorKey,
-          builder: (context, state) => const DesignPreviewScreen(),
+        pageBuilder: (context, state) => psnTransitionPage<void>(
+          key: state.pageKey,
+          child: const AuthScreen(),
         ),
+      ),
+      GoRoute(
+        path: '/search',
+        parentNavigatorKey: _rootNavigatorKey,
+        pageBuilder: (context, state) => psnTransitionPage<void>(
+          key: state.pageKey,
+          child: const SearchPlaceholderScreen(),
+        ),
+      ),
     ],
   );
 }

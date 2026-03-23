@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
+import '../core/env_value.dart';
 import '../models/pipeline_models.dart';
 
 /// Abstracts transcription between Deepgram (primary) and Taddy (preferred).
@@ -17,9 +18,9 @@ class TranscriptionService {
 
   String get _provider =>
       dotenv.env['TRANSCRIPTION_PROVIDER']?.toLowerCase() ?? 'deepgram';
-  String get _deepgramKey => dotenv.env['DEEPGRAM_API_KEY'] ?? '';
-  String get _taddyKey => dotenv.env['TADDY_API_KEY'] ?? '';
-  String get _taddyUserId => dotenv.env['TADDY_USER_ID'] ?? '';
+  String get _deepgramKey => normalizeDotenvValue(dotenv.env['DEEPGRAM_API_KEY']);
+  String get _taddyKey => normalizeDotenvValue(dotenv.env['TADDY_API_KEY']);
+  String get _taddyUserId => normalizeDotenvValue(dotenv.env['TADDY_USER_ID']);
 
   /// Main entry point. Returns a transcription for the given episode segment.
   Future<TranscriptionResult> fetchTranscript({
@@ -126,11 +127,13 @@ class TranscriptionService {
     final effectiveEnd = endSec == -1 ? 999999 : endSec;
     final slicedText = full.sliceByTimestamp(startSec, effectiveEnd);
     final slicedWords = words
-        .where((w) => w.startSec >= startSec && w.endSec <= effectiveEnd)
+        .where((w) =>
+            TranscriptionResult.wordOverlapsInclusiveRange(w, startSec, effectiveEnd))
         .toList();
 
+    // Do not substitute the full episode if the slice is empty (wrong window).
     return TranscriptionResult(
-      transcript: slicedText.isEmpty ? rawText : slicedText,
+      transcript: slicedText,
       wordTimestamps: slicedWords,
       source: 'taddy',
     );
@@ -219,11 +222,12 @@ class TranscriptionService {
     final effectiveEnd = endSec == -1 ? 999999 : endSec;
     final sliced = full.sliceByTimestamp(startSec, effectiveEnd);
     final slicedWords = words
-        .where((w) => w.startSec >= startSec && w.endSec <= effectiveEnd)
+        .where((w) =>
+            TranscriptionResult.wordOverlapsInclusiveRange(w, startSec, effectiveEnd))
         .toList();
 
     return TranscriptionResult(
-      transcript: sliced.isEmpty ? rawTranscript : sliced,
+      transcript: sliced,
       wordTimestamps: slicedWords,
       source: 'deepgram',
     );

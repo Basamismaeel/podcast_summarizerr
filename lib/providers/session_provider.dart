@@ -1,16 +1,46 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/moments_stats_service.dart';
 import '../database/database.dart';
 import '../database/session_dao.dart';
 import '../models/summary_style.dart';
+import '../debug/agent_ndjson_log.dart';
 import '../services/cloud_pipeline_service.dart';
 
 const _uuid = Uuid();
+
+const _kPerShowStylePrefsKey = 'summary_style_per_artist';
+
+/// Style saved for [artist] (lowercased key), if any.
+SummaryStyle? readPerShowSummaryStyle(SharedPreferences prefs, String artist) {
+  try {
+    final raw = prefs.getString(_kPerShowStylePrefsKey);
+    if (raw == null || raw.isEmpty) return null;
+    final map = jsonDecode(raw) as Map<String, dynamic>;
+    final name = map[artist.trim().toLowerCase()] as String?;
+    return SummaryStyle.fromJson(name);
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<void> writePerShowSummaryStyle(String artist, SummaryStyle style) async {
+  final prefs = await SharedPreferences.getInstance();
+  var map = <String, dynamic>{};
+  final existing = prefs.getString(_kPerShowStylePrefsKey);
+  if (existing != null && existing.isNotEmpty) {
+    map = Map<String, dynamic>.from(jsonDecode(existing) as Map);
+  }
+  map[artist.trim().toLowerCase()] = style.name;
+  await prefs.setString(_kPerShowStylePrefsKey, jsonEncode(map));
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CORE PROVIDERS (unchanged API surface – existing consumers still work)
@@ -73,6 +103,19 @@ class SummarizeSessionNotifier extends StateNotifier<Set<String>> {
       await pipeline.processSession(sessionId, style: style);
     } catch (e) {
       debugPrint('[SummarizeNotifier] Unexpected error: $e');
+      // #region agent log
+      agentNdjsonLog(
+        hypothesisId: 'H5',
+        location: 'session_provider.dart:SummarizeSessionNotifier.summarize',
+        message: 'Unexpected error escaped processSession',
+        data: <String, Object?>{
+          'errorType': e.runtimeType.toString(),
+          'errorPreview': e.toString().length > 300
+              ? '${e.toString().substring(0, 300)}…'
+              : e.toString(),
+        },
+      );
+      // #endregion
     } finally {
       state = {...state}..remove(sessionId);
     }
@@ -161,6 +204,8 @@ class SessionActions {
     String? sourceApp,
     String? artworkUrl,
     SummaryStyle? summaryStyle,
+    String? tags,
+    String? sourceShareUrl,
   }) async {
     final id = _uuid.v4();
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -177,10 +222,14 @@ class SessionActions {
         endTimeSec: Value(endTimeSec),
         rangeLabel: Value(rangeLabel),
         summaryStyle: Value(summaryStyle?.toJson()),
+        tags: Value(tags),
+        sourceShareUrl: Value(sourceShareUrl),
         createdAt: now,
         updatedAt: now,
       ),
     );
+
+    await MomentsStatsService.incrementMomentsSaved();
 
     return id;
   }
@@ -199,7 +248,15 @@ class SessionActions {
     String? artworkUrl,
     SummaryStyle? summaryStyle,
     Map<String, String>? episodeHint,
+    String? tags,
+    String? sourceShareUrl,
   }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final resolvedStyle = summaryStyle ??
+        readPerShowSummaryStyle(prefs, artist) ??
+        SummaryStyle.fromJson(prefs.getString('default_summary_style')) ??
+        SummaryStyle.insights;
+
     final id = await createSession(
       title: title,
       artist: artist,
@@ -209,11 +266,22 @@ class SessionActions {
       rangeLabel: rangeLabel,
       sourceApp: sourceApp,
       artworkUrl: artworkUrl,
-      summaryStyle: summaryStyle,
+      summaryStyle: resolvedStyle,
+      tags: tags,
+      sourceShareUrl: sourceShareUrl,
     );
-    unawaited(pipeline.processSession(id, style: summaryStyle, episodeHint: episodeHint));
+    unawaited(
+      pipeline.processSession(id, style: resolvedStyle, episodeHint: episodeHint),
+    );
     return id;
   }
+
+  /// Next summaries for this podcast use [style] unless overridden per save.
+  Future<void> rememberSummaryStyleForShow(String artist, SummaryStyle style) =>
+      writePerShowSummaryStyle(artist, style);
+
+  Future<void> updateSessionTags(String sessionId, String? tagsCsv) =>
+      dao.updateSessionTags(sessionId, tagsCsv);
 
   Future<void> deleteSession(String id) => dao.deleteSession(id);
 

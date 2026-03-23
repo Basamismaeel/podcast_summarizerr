@@ -1,12 +1,13 @@
 import 'dart:async';
+import 'dart:ui' show FontFeature, ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../core/haptics.dart';
+import '../../core/snipd_style.dart';
 import '../../core/tokens.dart';
 import '../../database/database.dart';
 import '../../models/summary_style.dart';
@@ -19,12 +20,13 @@ import '../../services/siri_service.dart';
 import '../../widgets/confirm_delete_session_sheet.dart';
 import '../../widgets/psn_bottom_sheet.dart';
 import '../../widgets/psn_button.dart';
-import '../../widgets/psn_empty_state.dart';
+import '../../widgets/smart_home_empty_state.dart';
+import 'widgets/podcast_artwork.dart';
 import 'widgets/recording_indicator.dart';
 import 'widgets/session_card.dart';
 
 const _kEdgePadding = Tokens.spaceMd;
-const _kCardSpacing = 12.0;
+const _kCardSpacing = 4.0;
 /// Pre-build off-screen rows for smoother fling on long lists.
 const _kScrollCacheExtent = 400.0;
 
@@ -60,6 +62,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         startTimeSec: position,
         sourceApp: 'Siri',
       );
+      if (mounted) await PSNHaptics.momentSaved();
     }
   }
 
@@ -130,8 +133,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         rangeLabel:
             '${_formatRangeTimestamp(range.start)} – ${_formatRangeTimestamp(range.end)}',
         sourceApp: info.source,
+        sourceShareUrl: info.sourceUrl,
         episodeHint: episodeHint.isEmpty ? null : episodeHint,
       );
+      if (mounted) await PSNHaptics.momentSaved();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -356,7 +361,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     });
 
     Future.delayed(const Duration(seconds: 2), () async {
-      await Permission.notification.request();
+      await NotificationService.instance.requestPermission();
     });
   }
 
@@ -402,6 +407,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     higLightTap();
     final ok = await showConfirmDeleteMultipleSessionsSheet(context, count: n);
     if (ok != true || !context.mounted) return;
+    await PSNHaptics.delete();
     final ids = List<String>.from(_selectedSessionIds);
     final dao = ref.read(sessionDaoProvider);
     for (final id in ids) {
@@ -447,32 +453,61 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
+  Widget _snipdHomeTheme(BuildContext context, Widget child) {
+    final base = Theme.of(context);
+    return Theme(
+      data: base.copyWith(
+        scaffoldBackgroundColor: SnipdStyle.bgDeep,
+        colorScheme: base.colorScheme.copyWith(
+          surface: SnipdStyle.bgDeep,
+          onSurface: SnipdStyle.title,
+          onSurfaceVariant: SnipdStyle.meta,
+          primary: SnipdStyle.accent,
+          outline: SnipdStyle.borderSubtle,
+        ),
+        textTheme: base.textTheme.apply(
+          bodyColor: SnipdStyle.label,
+          displayColor: SnipdStyle.title,
+        ),
+      ),
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final sessionsAsync = ref.watch(allSessionsProvider);
 
     return sessionsAsync.when(
-      loading: () => Scaffold(
-        backgroundColor: Theme.of(context).colorScheme.surface,
-        body: _HomeSkeleton(
-          onMorePressed: () => _showHomeActionsMenu(context),
+      loading: () => _snipdHomeTheme(
+        context,
+        Scaffold(
+          backgroundColor: SnipdStyle.bgDeep,
+          body: _HomeSkeleton(
+            onMorePressed: () => _showHomeActionsMenu(context),
+          ),
         ),
       ),
-      error: (e, _) => Scaffold(
-        backgroundColor: Theme.of(context).colorScheme.surface,
-        body: Center(
-          child: Text(
-            'Error: $e',
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+      error: (e, _) => _snipdHomeTheme(
+        context,
+        Scaffold(
+          backgroundColor: SnipdStyle.bgDeep,
+          body: Center(
+            child: Text(
+              'Error: $e',
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: SnipdStyle.meta,
+                  ),
+            ),
           ),
         ),
       ),
       data: (sessions) {
-        return Scaffold(
-          backgroundColor: Theme.of(context).colorScheme.surface,
-          body: Stack(
+        return _snipdHomeTheme(
+          context,
+          Scaffold(
+            backgroundColor: SnipdStyle.bgDeep,
+            body: Stack(
             children: [
               SafeArea(
                 bottom: false,
@@ -480,9 +515,46 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     ? CustomScrollView(
                         cacheExtent: _kScrollCacheExtent,
                         slivers: [
-                          _HomeSliverAppBar(
-                            totalCount: 0,
-                            onMorePressed: () => _showHomeActionsMenu(context),
+                          SliverToBoxAdapter(
+                            child: _SnipdHomeHeader(
+                              totalCount: 0,
+                              onMorePressed: () =>
+                                  _showHomeActionsMenu(context),
+                            ),
+                          ),
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                _kEdgePadding,
+                                0,
+                                _kEdgePadding,
+                                Tokens.spaceMd,
+                              ),
+                              child: _SnipdQuickNavGrid(
+                                inProgressCount: 0,
+                                onAddMoment: () => _showFabSheet(context),
+                                onBrowsePodcasts: () =>
+                                    context.push('/manual-entry'),
+                                onSearch: () => context.push('/search'),
+                                onInProgress: () => setState(() =>
+                                    _momentFilter = _MomentFilter.inProgress),
+                              ),
+                            ),
+                          ),
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                _kEdgePadding,
+                                0,
+                                _kEdgePadding,
+                                Tokens.spaceMd,
+                              ),
+                              child: _MomentFilterBar(
+                                value: _momentFilter,
+                                onChanged: (v) =>
+                                    setState(() => _momentFilter = v),
+                              ),
+                            ),
                           ),
                           SliverFillRemaining(
                             hasScrollBody: false,
@@ -490,16 +562,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               padding: const EdgeInsets.symmetric(
                                 horizontal: _kEdgePadding,
                               ),
-                              child: PSNEmptyState(
-                                icon: '🎙',
-                                title: 'No moments saved yet',
-                                subtitle:
-                                    'Pull down the notification bar and tap Save Moment while a podcast is playing.',
-                                action: PSNButton(
-                                  label: 'Browse podcasts',
-                                  variant: ButtonVariant.secondary,
-                                  onTap: () => context.push('/manual-entry'),
-                                ),
+                              child: SmartHomeEmptyStateLoader(
+                                onSeeHowItWorks: () =>
+                                    context.push('/onboarding'),
                               ),
                             ),
                           ),
@@ -521,6 +586,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 ),
             ],
           ),
+        ),
         );
       },
     );
@@ -539,11 +605,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final filtered = _applyMomentFilter(sessions);
     final grouped = _groupByDate(filtered);
 
+    final inProgressCount = sessions.where((s) {
+      final st = SessionStatus.fromJson(s.status);
+      return st == SessionStatus.queued ||
+          st == SessionStatus.summarizing ||
+          st == SessionStatus.recording;
+    }).length;
+
     final slivers = <Widget>[
-      _HomeSliverAppBar(
-        totalCount: sessions.length,
-        onMorePressed: () => _showHomeActionsMenu(context),
+      SliverToBoxAdapter(
+        child: _SnipdHomeHeader(
+          totalCount: sessions.length,
+          onMorePressed: () => _showHomeActionsMenu(context),
+        ),
       ),
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            _kEdgePadding,
+            0,
+            _kEdgePadding,
+            Tokens.spaceMd,
+          ),
+          child: _SnipdQuickNavGrid(
+            inProgressCount: inProgressCount,
+            onAddMoment: () => _showFabSheet(context),
+            onBrowsePodcasts: () => context.push('/manual-entry'),
+            onSearch: () => context.push('/search'),
+            onInProgress: () =>
+                setState(() => _momentFilter = _MomentFilter.inProgress),
+          ),
+        ),
+      ),
+      if (sessions.isNotEmpty)
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: Tokens.spaceMd),
+            child: _SnipdCoverStrip(sessions: sessions),
+          ),
+        ),
       SliverToBoxAdapter(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(
@@ -598,7 +698,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 'No moments match this filter.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      color: SnipdStyle.meta,
                     ),
               ),
             ),
@@ -627,17 +727,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   child: Text(
                     section,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
+                          fontWeight: FontWeight.w700,
+                          color: SnipdStyle.label,
+                          fontSize: 18,
                         ),
                   ),
                 ),
                 Icon(
                   Icons.chevron_right_rounded,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurfaceVariant
-                      .withValues(alpha: 0.5),
-                  size: 28,
+                  color: SnipdStyle.meta.withValues(alpha: 0.6),
+                  size: 22,
                 ),
               ],
             ),
@@ -650,10 +749,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             final session = items[index];
             final card = SessionCard(
               session: session,
+              snipdListingStyle: true,
               onTap: () => context.push('/summary/${session.id}'),
               onDelete: () =>
                   ref.read(sessionDaoProvider).deleteSession(session.id),
-              onSummarizeAgain: () {},
+              onSummarizeAgain: () => ref
+                  .read(sessionActionsProvider)
+                  .retrySummary(session.id),
               onChangeStyle: () {},
               selectionMode: _selectionMode,
               isSelected: _selectedSessionIds.contains(session.id),
@@ -661,44 +763,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             );
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
-              child: _selectionMode
-                  ? card
-                  : Dismissible(
-                      key: ValueKey('session-${session.id}'),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .errorContainer,
-                          borderRadius:
-                              BorderRadius.circular(Tokens.radiusMd),
-                        ),
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: _kEdgePadding),
-                        child: Icon(
-                          Icons.delete_outline_rounded,
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                      ),
-                      confirmDismiss: (_) async {
-                        final confirmed =
-                            await showConfirmDeleteSessionSheet(
-                          context,
-                          session.title,
-                        );
-                        if (confirmed == true) {
-                          await ref
-                              .read(sessionDaoProvider)
-                              .deleteSession(session.id);
-                        }
-                        return confirmed ?? false;
-                      },
-                      child: card,
-                    ),
+              child: card,
             );
           },
-          separatorBuilder: (_, _) => const SizedBox(height: _kCardSpacing),
+          separatorBuilder: (_, _) => const SizedBox.shrink(),
           itemCount: items.length,
         ),
       );
@@ -826,8 +894,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 }
 
-class _HomeSliverAppBar extends StatelessWidget {
-  const _HomeSliverAppBar({
+class _SnipdHomeHeader extends StatelessWidget {
+  const _SnipdHomeHeader({
     required this.totalCount,
     required this.onMorePressed,
   });
@@ -835,150 +903,419 @@ class _HomeSliverAppBar extends StatelessWidget {
   final int totalCount;
   final VoidCallback onMorePressed;
 
-  String get _greeting {
-    final hour = DateTime.now().hour;
-    if (hour < 12) return 'Good morning';
-    if (hour < 18) return 'Good afternoon';
-    return 'Good evening';
-  }
-
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final tt = Theme.of(context).textTheme;
-    return SliverAppBar(
-      pinned: true,
-      // Tall enough for greeting row + “N moments saved” + padding during expand.
-      expandedHeight: 132,
-      backgroundColor: cs.surface,
-      surfaceTintColor: Colors.transparent,
-      automaticallyImplyLeading: false,
-      flexibleSpace: LayoutBuilder(
-        builder: (context, constraints) {
-          final h = constraints.biggest.height;
-          final collapsed = h <= kToolbarHeight + 16;
-          // During collapse, height can sit between toolbar and full expand — hiding
-          // the subtitle in that band avoids “bottom overflowed by ~8px”.
-          final showSubtitle = !collapsed && h >= 102;
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
-            child: Align(
-              alignment: Alignment.bottomLeft,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          collapsed ? 'Moments' : _greeting,
-                          style: collapsed
-                              ? tt.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                )
-                              : tt.headlineMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        _kEdgePadding,
+        MediaQuery.paddingOf(context).top > 0 ? 8 : 16,
+        _kEdgePadding,
+        4,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Text(
+                  'Home',
+                  style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 34,
+                        height: 1.05,
+                        color: SnipdStyle.title,
+                        letterSpacing: -0.5,
                       ),
-                      const _CreditsChip(),
-                      const SizedBox(width: Tokens.spaceXs),
-                      IconButton(
-                        onPressed: () {
-                          higLightTap();
-                          onMorePressed();
-                        },
-                        icon: const Icon(Icons.more_horiz_rounded),
-                        tooltip: 'More',
-                        style: IconButton.styleFrom(
-                          foregroundColor: cs.onSurfaceVariant,
-                          minimumSize: const Size(Tokens.minTap, Tokens.minTap),
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (showSubtitle) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      '$totalCount moments saved',
-                      style: tt.bodyMedium?.copyWith(
-                        color: cs.onSurfaceVariant,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: Tokens.spaceSm + 4),
-                  ],
-                ],
+                ),
               ),
+              IconButton(
+                onPressed: () {
+                  higLightTap();
+                  context.push('/search');
+                },
+                icon: const Icon(Icons.search_rounded),
+                tooltip: 'Search',
+                style: IconButton.styleFrom(
+                  foregroundColor: SnipdStyle.label,
+                  minimumSize: const Size(Tokens.minTap, Tokens.minTap),
+                ),
+              ),
+              const _CreditsChip(snipdChrome: true),
+              IconButton(
+                onPressed: () {
+                  higLightTap();
+                  context.go('/settings');
+                },
+                icon: const Icon(Icons.settings_outlined),
+                tooltip: 'Settings',
+                style: IconButton.styleFrom(
+                  foregroundColor: SnipdStyle.label,
+                  minimumSize: const Size(Tokens.minTap, Tokens.minTap),
+                ),
+              ),
+              IconButton(
+                onPressed: () {
+                  higLightTap();
+                  onMorePressed();
+                },
+                icon: const Icon(Icons.more_horiz_rounded),
+                tooltip: 'More',
+                style: IconButton.styleFrom(
+                  foregroundColor: SnipdStyle.label,
+                  minimumSize: const Size(Tokens.minTap, Tokens.minTap),
+                ),
+              ),
+            ],
+          ),
+          if (totalCount > 0) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Your library has $totalCount moments',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: SnipdStyle.meta,
+                    fontSize: 13,
+                  ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-          );
-        },
+          ],
+        ],
       ),
     );
   }
 }
 
-class _CreditsChip extends StatelessWidget {
-  const _CreditsChip();
+class _SnipdQuickNavGrid extends StatelessWidget {
+  const _SnipdQuickNavGrid({
+    required this.inProgressCount,
+    required this.onAddMoment,
+    required this.onBrowsePodcasts,
+    required this.onSearch,
+    required this.onInProgress,
+  });
+
+  final int inProgressCount;
+  final VoidCallback onAddMoment;
+  final VoidCallback onBrowsePodcasts;
+  final VoidCallback onSearch;
+  final VoidCallback onInProgress;
+
+  /// Tight rows; tall enough for 13px icon + 10px text without overflow.
+  static const double _rowH = 34;
 
   @override
   Widget build(BuildContext context) {
-    const remainingMinutes = 342;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: _quickNavCard(
+                context,
+                icon: Icons.add_circle_outline_rounded,
+                label: 'Add moment',
+                onTap: onAddMoment,
+              ),
+            ),
+            const SizedBox(width: 5),
+            Expanded(
+              child: _quickNavCard(
+                context,
+                icon: Icons.podcasts_outlined,
+                label: 'Browse podcasts',
+                onTap: onBrowsePodcasts,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 5),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: _quickNavCard(
+                context,
+                icon: Icons.search_rounded,
+                label: 'Search',
+                onTap: onSearch,
+              ),
+            ),
+            const SizedBox(width: 5),
+            Expanded(
+              child: _quickNavCard(
+                context,
+                icon: Icons.hourglass_top_rounded,
+                label: 'In progress',
+                onTap: onInProgress,
+                badge: inProgressCount > 0 ? '$inProgressCount' : null,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _quickNavCard(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    String? badge,
+  }) {
+    return SizedBox(
+      height: _rowH,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            higLightTap();
+            onTap();
+          },
+          borderRadius: BorderRadius.circular(8),
+          child: DecoratedBox(
+            decoration: SnipdStyle.quickNavCardDecoration.copyWith(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 0),
+              child: Row(
+                children: [
+                  Icon(icon, color: SnipdStyle.accent, size: 13),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: SnipdStyle.label,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 10,
+                            height: 1.0,
+                          ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (badge != null)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: SnipdStyle.accent.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          badge,
+                          style:
+                              Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: SnipdStyle.accent,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 9,
+                                    height: 1.0,
+                                  ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SnipdCoverStrip extends StatelessWidget {
+  const _SnipdCoverStrip({required this.sessions});
+
+  final List<ListeningSession> sessions;
+
+  @override
+  Widget build(BuildContext context) {
+    final seen = <String>{};
+    final ordered = <ListeningSession>[];
+    for (final s in sessions) {
+      final u = s.artworkUrl?.trim() ?? '';
+      if (u.isEmpty) continue;
+      if (seen.contains(u)) continue;
+      seen.add(u);
+      ordered.add(s);
+      if (ordered.length >= 18) break;
+    }
+    if (ordered.isEmpty) return const SizedBox.shrink();
+
+    return SizedBox(
+      height: 76,
+      child: ScrollConfiguration(
+        behavior: const _SnipdNoScrollbarBehavior(),
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
+          itemCount: ordered.length,
+          separatorBuilder: (_, _) => const SizedBox(width: 10),
+          itemBuilder: (context, i) {
+            final s = ordered[i];
+            return PodcastArtwork(
+              imageUrl: s.artworkUrl,
+              labelForInitials: s.artist,
+              size: 76,
+              borderRadius: 12,
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _SnipdNoScrollbarBehavior extends ScrollBehavior {
+  const _SnipdNoScrollbarBehavior();
+
+  @override
+  Widget buildScrollbar(
+    BuildContext context,
+    Widget child,
+    ScrollableDetails details,
+  ) {
+    return child;
+  }
+}
+
+class _CreditsChip extends StatefulWidget {
+  const _CreditsChip({this.snipdChrome = false});
+
+  final bool snipdChrome;
+
+  @override
+  State<_CreditsChip> createState() => _CreditsChipState();
+}
+
+class _CreditsChipState extends State<_CreditsChip>
+    with SingleTickerProviderStateMixin {
+  static const remainingMinutes = 342;
+  late AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    if (remainingMinutes < 10 && remainingMinutes > 0) {
+      _pulse.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final low = remainingMinutes < 50 && remainingMinutes > 0;
     final empty = remainingMinutes == 0;
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    final color = empty
-        ? cs.error
-        : (low ? cs.tertiary : cs.onSurfaceVariant);
+    final color = widget.snipdChrome
+        ? (empty
+            ? SnipdStyle.accent
+            : (low ? SnipdStyle.accent : SnipdStyle.label))
+        : (empty
+            ? cs.error
+            : (low ? cs.tertiary : cs.onSurfaceVariant));
 
     return Semantics(
       button: true,
       label: 'Credits, $remainingMinutes minutes remaining',
-      child: Material(
-        color: cs.surfaceContainerHighest,
+      child: ClipRRect(
         borderRadius: BorderRadius.circular(Tokens.radiusLg),
-        child: InkWell(
-          onTap: () {
-            higLightTap();
-            PSNBottomSheet.show(
-              context: context,
-              title: 'Credits',
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '$remainingMinutes minutes left this month.',
-                    style: tt.bodyLarge,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: Material(
+            color: widget.snipdChrome
+                ? SnipdStyle.card.withValues(alpha: 0.95)
+                : Colors.white.withValues(alpha: 0.06),
+            child: InkWell(
+              onTap: () {
+                higLightTap();
+                PSNBottomSheet.show(
+                  context: context,
+                  title: 'Credits',
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        '$remainingMinutes minutes left this month.',
+                        style: tt.bodyLarge,
+                      ),
+                      const SizedBox(height: Tokens.spaceMd),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(Tokens.radiusSm),
+                        child: LinearProgressIndicator(
+                          value: (remainingMinutes / 500).clamp(0.0, 1.0),
+                          minHeight: 8,
+                        ),
+                      ),
+                      const SizedBox(height: Tokens.spaceMd),
+                      PSNButton(
+                        label: 'Upgrade plan',
+                        fullWidth: true,
+                        onTap: () {
+                          Navigator.of(context).pop();
+                        },
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: Tokens.spaceMd),
-                  PSNButton(
-                    label: 'Upgrade plan',
-                    fullWidth: true,
-                    onTap: () {
-                      Navigator.of(context).pop();
-                    },
-                  ),
-                ],
-              ),
-            );
-          },
-          borderRadius: BorderRadius.circular(Tokens.radiusLg),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: Tokens.spaceSm + 4,
-              vertical: Tokens.spaceSm,
-            ),
-            child: Text(
-              '$remainingMinutes min',
-              style: tt.labelLarge?.copyWith(
-                fontWeight: FontWeight.w500,
-                color: color,
-                fontFeatures: const [FontFeature.tabularFigures()],
+                );
+              },
+              borderRadius: BorderRadius.circular(Tokens.radiusLg),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: Tokens.spaceSm + 4,
+                  vertical: Tokens.spaceSm,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (remainingMinutes < 10 && remainingMinutes > 0)
+                      AnimatedBuilder(
+                        animation: _pulse,
+                        builder: (context, child) => Opacity(
+                          opacity: 0.35 + 0.65 * _pulse.value,
+                          child: Container(
+                            width: 6,
+                            height: 6,
+                            margin: const EdgeInsets.only(right: 6),
+                            decoration: const BoxDecoration(
+                              color: Colors.redAccent,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ),
+                    Text(
+                      '$remainingMinutes min',
+                      style: tt.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w500,
+                        color: color,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1186,41 +1523,86 @@ class _MomentFilterBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Show',
-          style: tt.titleSmall?.copyWith(
-            color: cs.onSurfaceVariant,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.2,
+    Widget pill(_MomentFilter f) {
+      final selected = value == f;
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              higLightTap();
+              onChanged(f);
+            },
+            borderRadius: BorderRadius.circular(50),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: selected ? Colors.white : SnipdStyle.card,
+                borderRadius: BorderRadius.circular(50),
+                border: selected
+                    ? null
+                    : Border.all(color: SnipdStyle.borderSubtle, width: 1),
+              ),
+              child: Text(
+                _label(f),
+                style: tt.labelLarge?.copyWith(
+                  color: selected ? SnipdStyle.bgDeep : SnipdStyle.label,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  fontSize: 13,
+                ),
+              ),
+            ),
           ),
         ),
-        const SizedBox(height: Tokens.spaceSm),
-        Wrap(
-          spacing: Tokens.spaceSm,
-          runSpacing: Tokens.spaceSm,
-          children: _MomentFilter.values.map((f) {
-            final selected = value == f;
-            return FilterChip(
-              label: Text(_label(f)),
-              selected: selected,
-              onSelected: (_) {
-                higLightTap();
-                onChanged(f);
-              },
-              showCheckmark: false,
-              selectedColor: cs.primaryContainer,
-              labelStyle: tt.labelLarge?.copyWith(
-                color: selected ? cs.onPrimaryContainer : cs.onSurface,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-              ),
-            );
-          }).toList(),
+      );
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: _MomentFilter.values.map(pill).toList(),
+            ),
+          ),
+        ),
+        PopupMenuButton<_MomentFilter>(
+          tooltip: 'Filter',
+          icon: Icon(
+            Icons.tune_rounded,
+            color: SnipdStyle.label,
+            size: 22,
+          ),
+          color: SnipdStyle.card,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: SnipdStyle.borderSubtle),
+          ),
+          onSelected: (f) {
+            higLightTap();
+            onChanged(f);
+          },
+          itemBuilder: (context) => _MomentFilter.values
+              .map(
+                (f) => PopupMenuItem<_MomentFilter>(
+                  value: f,
+                  child: Text(
+                    _label(f),
+                    style: TextStyle(
+                      color: value == f ? SnipdStyle.accent : SnipdStyle.label,
+                      fontWeight:
+                          value == f ? FontWeight.w700 : FontWeight.w400,
+                    ),
+                  ),
+                ),
+              )
+              .toList(),
         ),
       ],
     );
@@ -1237,7 +1619,12 @@ class _HomeSkeleton extends StatelessWidget {
     return CustomScrollView(
       cacheExtent: _kScrollCacheExtent,
       slivers: [
-        _HomeSliverAppBar(totalCount: 0, onMorePressed: onMorePressed),
+        SliverToBoxAdapter(
+          child: _SnipdHomeHeader(
+            totalCount: 0,
+            onMorePressed: onMorePressed,
+          ),
+        ),
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
           sliver: SliverList.separated(
@@ -1274,11 +1661,11 @@ class _AppleSessionSkeletonCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              width: 56,
-              height: 56,
+              width: 64,
+              height: 64,
               decoration: BoxDecoration(
                 color: base,
-                borderRadius: BorderRadius.circular(Tokens.radiusMd),
+                borderRadius: BorderRadius.circular(10),
               ),
             ),
             const SizedBox(width: 14),
@@ -1288,7 +1675,7 @@ class _AppleSessionSkeletonCard extends StatelessWidget {
                 children: [
                   Container(
                     height: 16,
-                    width: double.infinity,
+                    width: MediaQuery.sizeOf(context).width * 0.7,
                     decoration: BoxDecoration(
                       color: base,
                       borderRadius: BorderRadius.circular(Tokens.radiusXs),
@@ -1296,8 +1683,8 @@ class _AppleSessionSkeletonCard extends StatelessWidget {
                   ),
                   const SizedBox(height: Tokens.spaceSm),
                   Container(
-                    height: 16,
-                    width: 180,
+                    height: 12,
+                    width: MediaQuery.sizeOf(context).width * 0.4,
                     decoration: BoxDecoration(
                       color: base,
                       borderRadius: BorderRadius.circular(Tokens.radiusXs),
@@ -1305,8 +1692,8 @@ class _AppleSessionSkeletonCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 10),
                   Container(
-                    height: 12,
-                    width: 220,
+                    height: 10,
+                    width: MediaQuery.sizeOf(context).width * 0.3,
                     decoration: BoxDecoration(
                       color: base,
                       borderRadius: BorderRadius.circular(Tokens.radiusXs),

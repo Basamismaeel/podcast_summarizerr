@@ -41,13 +41,24 @@ class TranscriptionResult {
 
   bool get hasWordTimestamps => wordTimestamps.isNotEmpty;
 
+  /// True if this word overlaps the inclusive wall-clock window [startSec, endSec].
+  static bool wordOverlapsInclusiveRange(
+    WordTimestamp w,
+    int startSec,
+    int endSec,
+  ) {
+    final lo = startSec.toDouble();
+    final hi = endSec.toDouble();
+    return w.endSec >= lo && w.startSec <= hi;
+  }
+
   /// Extract transcript text within a time range using word timestamps.
   String sliceByTimestamp(int startSec, int endSec) {
     if (wordTimestamps.isEmpty) {
       return _estimateSliceByCharPosition(startSec, endSec);
     }
     final words = wordTimestamps
-        .where((w) => w.startSec >= startSec && w.endSec <= endSec)
+        .where((w) => wordOverlapsInclusiveRange(w, startSec, endSec))
         .map((w) => w.word)
         .toList();
     return words.join(' ');

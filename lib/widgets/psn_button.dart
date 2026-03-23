@@ -143,12 +143,45 @@ class PSNButton extends StatelessWidget {
       );
     }
 
+    final wrapped = _PressScale(child: button);
+
     if (fullWidth) {
       return SizedBox(
         width: double.infinity,
-        child: button,
+        child: wrapped,
       );
     }
-    return button;
+    return wrapped;
+  }
+}
+
+class _PressScale extends StatefulWidget {
+  const _PressScale({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_PressScale> createState() => _PressScaleState();
+}
+
+class _PressScaleState extends State<_PressScale> {
+  bool _down = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => setState(() => _down = true),
+      onPointerUp: (_) => setState(() => _down = false),
+      onPointerCancel: (_) => setState(() => _down = false),
+      child: AnimatedScale(
+        scale: _down ? 0.97 : 1,
+        duration: _down
+            ? const Duration(milliseconds: 80)
+            : const Duration(milliseconds: 150),
+        curve: _down ? Curves.easeOut : Curves.easeOutBack,
+        child: widget.child,
+      ),
+    );
   }
 }
