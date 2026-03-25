@@ -23,14 +23,15 @@ class ArtworkColorService {
     }
 
     try {
-      final provider = NetworkImage(url);
+      // perf: Small decode before palette (less main-thread decode work than full cover art).
       final generator = await PaletteGenerator.fromImageProvider(
-        provider,
+        ResizeImage(NetworkImage(url), width: 64, height: 64),
         size: const Size(64, 64),
         maximumColorCount: 12,
       );
 
-      final color = generator.darkVibrantColor?.color ??
+      final color =
+          generator.darkVibrantColor?.color ??
           generator.vibrantColor?.color ??
           generator.dominantColor?.color ??
           fallback;

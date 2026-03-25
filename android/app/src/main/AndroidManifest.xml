@@ -9,6 +9,10 @@
         android:label="podcast_safety_net"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!-- perf: Prefer Impeller over Skia for consistent GPU rendering on Android. -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableImpeller"
+            android:value="true" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

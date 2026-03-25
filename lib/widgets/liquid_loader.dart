@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
+import '../core/image_decode_cache.dart';
+
 /// Circular liquid-style progress with sine waves (premium “thinking” state).
 class LiquidLoader extends StatefulWidget {
   const LiquidLoader({
@@ -15,6 +17,7 @@ class LiquidLoader extends StatefulWidget {
   });
 
   final double diameter;
+
   /// 0–1 simulated fill level (e.g. animates over summarization).
   final double progress;
   final String? artworkUrl;
@@ -87,7 +90,8 @@ class _CenterAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final u = url?.trim();
-    final has = u != null &&
+    final has =
+        u != null &&
         u.isNotEmpty &&
         (u.startsWith('http://') || u.startsWith('https://'));
     if (has) {
@@ -97,6 +101,9 @@ class _CenterAvatar extends StatelessWidget {
           width: size,
           height: size,
           fit: BoxFit.cover,
+          // perf: Small avatar — bound decode size to logical diameter.
+          memCacheWidth: decodeCacheExtent(context, size),
+          memCacheHeight: decodeCacheExtent(context, size),
           placeholder: (context, url) => Container(
             width: size,
             height: size,
@@ -110,7 +117,9 @@ class _CenterAvatar extends StatelessWidget {
   }
 
   Widget _initials() {
-    final letter = label.trim().isNotEmpty ? label.trim()[0].toUpperCase() : '?';
+    final letter = label.trim().isNotEmpty
+        ? label.trim()[0].toUpperCase()
+        : '?';
     return Container(
       width: size,
       height: size,
@@ -148,9 +157,7 @@ class _LiquidPainter extends CustomPainter {
     final r = size.width / 2;
 
     canvas.save();
-    canvas.clipPath(
-      Path()..addOval(Rect.fromCircle(center: c, radius: r)),
-    );
+    canvas.clipPath(Path()..addOval(Rect.fromCircle(center: c, radius: r)));
 
     final fillH = size.height * progress;
     final baseY = size.height - fillH;
@@ -168,7 +175,8 @@ class _LiquidPainter extends CustomPainter {
       final amp = 4.0 + layer * 2.0;
       final path = Path()..moveTo(0, size.height);
       for (double x = 0; x <= w; x += 2) {
-        final y = baseY +
+        final y =
+            baseY +
             math.sin((x / w * 4 * math.pi) + phase) * amp +
             math.sin((x / w * 2 * math.pi) - phase * 0.5) * (amp * 0.5);
         path.lineTo(x, y);

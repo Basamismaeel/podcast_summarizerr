@@ -9,7 +9,7 @@ import 'package:shimmer/shimmer.dart';
 
 import '../../core/haptics.dart';
 import '../../core/podcast_home_colors.dart';
-import '../../core/snipd_style.dart';
+import '../../core/podcast_dark_tokens.dart';
 import '../../core/tokens.dart';
 import '../../debug/agent_ndjson_log.dart';
 import '../../database/database.dart';
@@ -105,6 +105,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   _MomentFilter _momentFilter = _MomentFilter.all;
   bool _selectionMode = false;
   final Set<String> _selectedSessionIds = {};
+
   /// Prevents overlapping clipboard imports (resume + post-frame, etc.) from
   /// creating duplicate sessions before [ClipboardPodcastService] marks the URL processed.
   Future<void>? _clipboardImportInFlight;
@@ -156,7 +157,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
-  Future<void> _checkClipboardForPodcastImpl({bool userInitiated = false}) async {
+  Future<void> _checkClipboardForPodcastImpl({
+    bool userInitiated = false,
+  }) async {
     // #region agent log
     agentNdjsonLog(
       hypothesisId: 'H_HOME',
@@ -233,10 +236,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         hypothesisId: 'H_HOME',
         location: 'home_screen.dart:_checkClipboardForPodcastImpl',
         message: 'createAndSummarize skipRangeSheet branch',
-        data: {
-          'source': info.source,
-          'shareUrlLen': info.sourceUrl.length,
-        },
+        data: {'source': info.source, 'shareUrlLen': info.sourceUrl.length},
         runId: 'dup-summary',
       );
       // #endregion
@@ -257,7 +257,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         final kind = info.source == 'gutenberg' ? 'E-book' : 'Audiobook';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Saved “${info.episodeTitle}” ($kind — pick a chapter on the summary).'),
+            content: Text(
+              'Saved “${info.episodeTitle}” ($kind — pick a chapter on the summary).',
+            ),
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 3),
           ),
@@ -346,7 +348,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _bannerPollTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
       final info = await NowPlayingService.instance.getCurrentNowPlaying();
       if (info != null) {
-        await NotificationService.instance.updateBanner(info.title, info.artist);
+        await NotificationService.instance.updateBanner(
+          info.title,
+          info.artist,
+        );
       }
     });
 
@@ -443,16 +448,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
-  Widget _snipdHomeTheme(BuildContext context, Widget child) {
+  Widget _podcastDarkShellTheme(BuildContext context, Widget child) {
     final base = Theme.of(context);
     if (base.brightness == Brightness.light) {
       return child;
     }
     return Theme(
       data: base.copyWith(
-        scaffoldBackgroundColor: SnipdStyle.bgDeep,
+        scaffoldBackgroundColor: PodcastDarkTokens.bgDeep,
         colorScheme: base.colorScheme.copyWith(
-          surface: SnipdStyle.bgDeep,
+          surface: PodcastDarkTokens.bgDeep,
           onSurface: PodcastHomeColors.title(context),
           onSurfaceVariant: PodcastHomeColors.meta(context),
           primary: PodcastHomeColors.accent(context),
@@ -472,7 +477,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final sessionsAsync = ref.watch(allSessionsProvider);
 
     return sessionsAsync.when(
-      loading: () => _snipdHomeTheme(
+      loading: () => _podcastDarkShellTheme(
         context,
         Scaffold(
           backgroundColor: PodcastHomeColors.scaffold(context),
@@ -481,7 +486,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
       ),
-      error: (e, _) => _snipdHomeTheme(
+      error: (e, _) => _podcastDarkShellTheme(
         context,
         Scaffold(
           backgroundColor: PodcastHomeColors.scaffold(context),
@@ -489,97 +494,99 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             child: Text(
               'Error: $e',
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: PodcastHomeColors.meta(context),
-                  ),
+                color: PodcastHomeColors.meta(context),
+              ),
             ),
           ),
         ),
       ),
       data: (sessions) {
-        return _snipdHomeTheme(
+        return _podcastDarkShellTheme(
           context,
           Scaffold(
             backgroundColor: PodcastHomeColors.scaffold(context),
             body: Stack(
-            children: [
-              SafeArea(
-                bottom: false,
-                child: sessions.isEmpty
-                    ? CustomScrollView(
-                        cacheExtent: _kScrollCacheExtent,
-                        slivers: [
-                          SliverToBoxAdapter(
-                            child: _SnipdHomeHeader(
-                              totalCount: 0,
-                              onMorePressed: () =>
-                                  _showHomeActionsMenu(context),
-                            ),
-                          ),
-                          SliverToBoxAdapter(
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                _kEdgePadding,
-                                0,
-                                _kEdgePadding,
-                                Tokens.spaceMd,
-                              ),
-                              child: _SnipdQuickNavGrid(
-                                inProgressCount: 0,
-                                onAddMoment: () => _showFabSheet(context),
-                                onBrowsePodcasts: () =>
-                                    context.push('/manual-entry'),
-                                onSearch: () => context.push('/search'),
-                                onInProgress: () => setState(() =>
-                                    _momentFilter = _MomentFilter.inProgress),
+              children: [
+                SafeArea(
+                  bottom: false,
+                  child: sessions.isEmpty
+                      ? CustomScrollView(
+                          cacheExtent: _kScrollCacheExtent,
+                          slivers: [
+                            SliverToBoxAdapter(
+                              child: _PodcastHomeHeader(
+                                totalCount: 0,
+                                onMorePressed: () =>
+                                    _showHomeActionsMenu(context),
                               ),
                             ),
-                          ),
-                          SliverToBoxAdapter(
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                _kEdgePadding,
-                                0,
-                                _kEdgePadding,
-                                Tokens.spaceMd,
-                              ),
-                              child: _MomentFilterBar(
-                                value: _momentFilter,
-                                onChanged: (v) =>
-                                    setState(() => _momentFilter = v),
-                              ),
-                            ),
-                          ),
-                          SliverFillRemaining(
-                            hasScrollBody: false,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: _kEdgePadding,
-                              ),
-                              child: SmartHomeEmptyStateLoader(
-                                onSeeHowItWorks: () =>
-                                    context.push('/onboarding'),
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  _kEdgePadding,
+                                  0,
+                                  _kEdgePadding,
+                                  Tokens.spaceMd,
+                                ),
+                                child: _PodcastQuickNavGrid(
+                                  inProgressCount: 0,
+                                  onAddMoment: () => _showFabSheet(context),
+                                  onBrowsePodcasts: () =>
+                                      context.push('/manual-entry'),
+                                  onSearch: () => context.push('/search'),
+                                  onInProgress: () => setState(
+                                    () => _momentFilter =
+                                        _MomentFilter.inProgress,
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                      )
-                    : _buildSessionList(context, ref, sessions),
-              ),
-              if (_selectionMode)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: _SelectionBottomBar(
-                    selectedCount: _selectedSessionIds.length,
-                    onDone: _exitSelectionMode,
-                    onSelectAll: () => _selectAllVisible(sessions),
-                    onDelete: () => _deleteSelectedSessions(context, ref),
-                  ),
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  _kEdgePadding,
+                                  0,
+                                  _kEdgePadding,
+                                  Tokens.spaceMd,
+                                ),
+                                child: _MomentFilterBar(
+                                  value: _momentFilter,
+                                  onChanged: (v) =>
+                                      setState(() => _momentFilter = v),
+                                ),
+                              ),
+                            ),
+                            SliverFillRemaining(
+                              hasScrollBody: false,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: _kEdgePadding,
+                                ),
+                                child: SmartHomeEmptyStateLoader(
+                                  onSeeHowItWorks: () =>
+                                      context.push('/onboarding'),
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : _buildSessionList(context, ref, sessions),
                 ),
-            ],
+                if (_selectionMode)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _SelectionBottomBar(
+                      selectedCount: _selectedSessionIds.length,
+                      onDone: _exitSelectionMode,
+                      onSelectAll: () => _selectAllVisible(sessions),
+                      onDelete: () => _deleteSelectedSessions(context, ref),
+                    ),
+                  ),
+              ],
+            ),
           ),
-        ),
         );
       },
     );
@@ -591,8 +598,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     List<ListeningSession> sessions,
   ) {
     final recordingSessions = sessions
-        .where((s) =>
-            SessionStatus.fromJson(s.status) == SessionStatus.recording)
+        .where(
+          (s) => SessionStatus.fromJson(s.status) == SessionStatus.recording,
+        )
         .toList();
 
     final filtered = _applyMomentFilter(sessions);
@@ -607,7 +615,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
     final slivers = <Widget>[
       SliverToBoxAdapter(
-        child: _SnipdHomeHeader(
+        child: _PodcastHomeHeader(
           totalCount: sessions.length,
           onMorePressed: () => _showHomeActionsMenu(context),
         ),
@@ -620,7 +628,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             _kEdgePadding,
             Tokens.spaceMd,
           ),
-          child: _SnipdQuickNavGrid(
+          child: _PodcastQuickNavGrid(
             inProgressCount: inProgressCount,
             onAddMoment: () => _showFabSheet(context),
             onBrowsePodcasts: () => context.push('/manual-entry'),
@@ -634,7 +642,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.only(bottom: Tokens.spaceMd),
-            child: _SnipdCoverStrip(sessions: sessions),
+            child: _PodcastCoverStrip(sessions: sessions),
           ),
         ),
       SliverToBoxAdapter(
@@ -691,8 +699,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 'No moments match this filter.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: PodcastHomeColors.meta(context),
-                    ),
+                  color: PodcastHomeColors.meta(context),
+                ),
               ),
             ),
           ),
@@ -720,10 +728,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   child: Text(
                     section,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: PodcastHomeColors.label(context),
-                          fontSize: 18,
-                        ),
+                      fontWeight: FontWeight.w700,
+                      color: PodcastHomeColors.label(context),
+                      fontSize: 18,
+                    ),
                   ),
                 ),
                 Icon(
@@ -744,13 +752,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             final session = items[index];
             final card = SessionCard(
               session: session,
-              snipdListingStyle: true,
+              homeRowCompactStyle: true,
               onTap: () => context.push('/summary/${session.id}'),
               onDelete: () =>
                   ref.read(sessionDaoProvider).deleteSession(session.id),
-              onSummarizeAgain: () => ref
-                  .read(sessionActionsProvider)
-                  .retrySummary(session.id),
+              onSummarizeAgain: () =>
+                  ref.read(sessionActionsProvider).retrySummary(session.id),
               onChangeStyle: () {},
               selectionMode: _selectionMode,
               isSelected: _selectedSessionIds.contains(session.id),
@@ -768,15 +775,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     });
 
     slivers.add(
-      SliverToBoxAdapter(
-        child: SizedBox(height: _selectionMode ? 88 : 24),
-      ),
+      SliverToBoxAdapter(child: SizedBox(height: _selectionMode ? 88 : 24)),
     );
 
-    return CustomScrollView(
-      cacheExtent: _kScrollCacheExtent,
-      slivers: slivers,
-    );
+    return CustomScrollView(cacheExtent: _kScrollCacheExtent, slivers: slivers);
   }
 
   Future<void> _showFabSheet(BuildContext context) async {
@@ -832,7 +834,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               ListTile(
-                leading: Icon(Icons.add_circle_outline_rounded, color: cs.primary),
+                leading: Icon(
+                  Icons.add_circle_outline_rounded,
+                  color: cs.primary,
+                ),
                 title: const Text('Add moment'),
                 onTap: () {
                   Navigator.of(ctx).pop();
@@ -848,9 +853,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 },
               ),
               ListTile(
-                leading: Icon(Icons.content_paste_go_rounded, color: cs.primary),
+                leading: Icon(
+                  Icons.content_paste_go_rounded,
+                  color: cs.primary,
+                ),
                 title: const Text('Paste copied link'),
-                subtitle: const Text('Spotify / Apple Podcasts URL from clipboard'),
+                subtitle: const Text(
+                  'Spotify / Apple Podcasts URL from clipboard',
+                ),
                 onTap: () {
                   Navigator.of(ctx).pop();
                   unawaited(_checkClipboardForPodcast(userInitiated: true));
@@ -889,8 +899,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 }
 
-class _SnipdHomeHeader extends StatelessWidget {
-  const _SnipdHomeHeader({
+class _PodcastHomeHeader extends StatelessWidget {
+  const _PodcastHomeHeader({
     required this.totalCount,
     required this.onMorePressed,
   });
@@ -917,12 +927,12 @@ class _SnipdHomeHeader extends StatelessWidget {
                 child: Text(
                   'Home',
                   style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 34,
-                        height: 1.05,
-                        color: PodcastHomeColors.title(context),
-                        letterSpacing: -0.5,
-                      ),
+                    fontWeight: FontWeight.w800,
+                    fontSize: 34,
+                    height: 1.05,
+                    color: PodcastHomeColors.title(context),
+                    letterSpacing: -0.5,
+                  ),
                 ),
               ),
               IconButton(
@@ -937,7 +947,7 @@ class _SnipdHomeHeader extends StatelessWidget {
                   minimumSize: const Size(Tokens.minTap, Tokens.minTap),
                 ),
               ),
-              const _CreditsChip(snipdChrome: true),
+              const _CreditsChip(useDarkCreditsStyle: true),
               IconButton(
                 onPressed: () {
                   higLightTap();
@@ -969,9 +979,9 @@ class _SnipdHomeHeader extends StatelessWidget {
             Text(
               'Your library has $totalCount moments',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: PodcastHomeColors.meta(context),
-                    fontSize: 13,
-                  ),
+                color: PodcastHomeColors.meta(context),
+                fontSize: 13,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -982,8 +992,8 @@ class _SnipdHomeHeader extends StatelessWidget {
   }
 }
 
-class _SnipdQuickNavGrid extends StatelessWidget {
-  const _SnipdQuickNavGrid({
+class _PodcastQuickNavGrid extends StatelessWidget {
+  const _PodcastQuickNavGrid({
     required this.inProgressCount,
     required this.onAddMoment,
     required this.onBrowsePodcasts,
@@ -1073,24 +1083,28 @@ class _SnipdQuickNavGrid extends StatelessWidget {
           },
           borderRadius: BorderRadius.circular(8),
           child: DecoratedBox(
-            decoration: PodcastHomeColors.quickNavCardDecoration(context).copyWith(
-              borderRadius: BorderRadius.circular(8),
-            ),
+            decoration: PodcastHomeColors.quickNavCardDecoration(
+              context,
+            ).copyWith(borderRadius: BorderRadius.circular(8)),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 0),
               child: Row(
                 children: [
-                  Icon(icon, color: PodcastHomeColors.accent(context), size: 13),
+                  Icon(
+                    icon,
+                    color: PodcastHomeColors.accent(context),
+                    size: 13,
+                  ),
                   const SizedBox(width: 5),
                   Expanded(
                     child: Text(
                       label,
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: PodcastHomeColors.label(context),
-                            fontWeight: FontWeight.w600,
-                            fontSize: 10,
-                            height: 1.0,
-                          ),
+                        color: PodcastHomeColors.label(context),
+                        fontWeight: FontWeight.w600,
+                        fontSize: 10,
+                        height: 1.0,
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -1104,18 +1118,20 @@ class _SnipdQuickNavGrid extends StatelessWidget {
                           vertical: 1,
                         ),
                         decoration: BoxDecoration(
-                          color: PodcastHomeColors.accent(context).withValues(alpha: 0.2),
+                          color: PodcastHomeColors.accent(
+                            context,
+                          ).withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
                           badge,
-                          style:
-                              Theme.of(context).textTheme.labelSmall?.copyWith(
-                                    color: PodcastHomeColors.accent(context),
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 9,
-                                    height: 1.0,
-                                  ),
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: PodcastHomeColors.accent(context),
+                                fontWeight: FontWeight.w700,
+                                fontSize: 9,
+                                height: 1.0,
+                              ),
                         ),
                       ),
                     ),
@@ -1129,8 +1145,8 @@ class _SnipdQuickNavGrid extends StatelessWidget {
   }
 }
 
-class _SnipdCoverStrip extends StatelessWidget {
-  const _SnipdCoverStrip({required this.sessions});
+class _PodcastCoverStrip extends StatelessWidget {
+  const _PodcastCoverStrip({required this.sessions});
 
   final List<ListeningSession> sessions;
 
@@ -1151,7 +1167,7 @@ class _SnipdCoverStrip extends StatelessWidget {
     return SizedBox(
       height: 76,
       child: ScrollConfiguration(
-        behavior: const _SnipdNoScrollbarBehavior(),
+        behavior: const _HiddenScrollbarScrollBehavior(),
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
@@ -1175,8 +1191,8 @@ class _SnipdCoverStrip extends StatelessWidget {
   }
 }
 
-class _SnipdNoScrollbarBehavior extends ScrollBehavior {
-  const _SnipdNoScrollbarBehavior();
+class _HiddenScrollbarScrollBehavior extends ScrollBehavior {
+  const _HiddenScrollbarScrollBehavior();
 
   @override
   Widget buildScrollbar(
@@ -1189,9 +1205,9 @@ class _SnipdNoScrollbarBehavior extends ScrollBehavior {
 }
 
 class _CreditsChip extends StatefulWidget {
-  const _CreditsChip({this.snipdChrome = false});
+  const _CreditsChip({this.useDarkCreditsStyle = false});
 
-  final bool snipdChrome;
+  final bool useDarkCreditsStyle;
 
   @override
   State<_CreditsChip> createState() => _CreditsChipState();
@@ -1226,13 +1242,13 @@ class _CreditsChipState extends State<_CreditsChip>
     final empty = remainingMinutes == 0;
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    final color = widget.snipdChrome
+    final color = widget.useDarkCreditsStyle
         ? (empty
-            ? PodcastHomeColors.accent(context)
-            : (low ? PodcastHomeColors.accent(context) : PodcastHomeColors.label(context)))
-        : (empty
-            ? cs.error
-            : (low ? cs.tertiary : cs.onSurfaceVariant));
+              ? PodcastHomeColors.accent(context)
+              : (low
+                    ? PodcastHomeColors.accent(context)
+                    : PodcastHomeColors.label(context)))
+        : (empty ? cs.error : (low ? cs.tertiary : cs.onSurfaceVariant));
 
     return Semantics(
       button: true,
@@ -1243,12 +1259,10 @@ class _CreditsChipState extends State<_CreditsChip>
           child: BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
             child: Material(
-              color: widget.snipdChrome
+              color: widget.useDarkCreditsStyle
                   ? PodcastHomeColors.card(context).withValues(alpha: 0.95)
-                  : Theme.of(context)
-                      .colorScheme
-                      .surfaceContainerHighest
-                      .withValues(alpha: 0.55),
+                  : Theme.of(context).colorScheme.surfaceContainerHighest
+                        .withValues(alpha: 0.55),
               child: InkWell(
                 onTap: () {
                   higLightTap();
@@ -1265,11 +1279,9 @@ class _CreditsChipState extends State<_CreditsChip>
                         ),
                         const SizedBox(height: Tokens.spaceMd),
                         ClipRRect(
-                          borderRadius:
-                              BorderRadius.circular(Tokens.radiusSm),
+                          borderRadius: BorderRadius.circular(Tokens.radiusSm),
                           child: LinearProgressIndicator(
-                            value:
-                                (remainingMinutes / 500).clamp(0.0, 1.0),
+                            value: (remainingMinutes / 500).clamp(0.0, 1.0),
                             minHeight: 8,
                           ),
                         ),
@@ -1315,9 +1327,7 @@ class _CreditsChipState extends State<_CreditsChip>
                         style: tt.labelLarge?.copyWith(
                           fontWeight: FontWeight.w500,
                           color: color,
-                          fontFeatures: const [
-                            FontFeature.tabularFigures(),
-                          ],
+                          fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
                     ],
@@ -1333,9 +1343,7 @@ class _CreditsChipState extends State<_CreditsChip>
 }
 
 class _ClipboardRangeSheetBody extends StatefulWidget {
-  const _ClipboardRangeSheetBody({
-    required this.info,
-  });
+  const _ClipboardRangeSheetBody({required this.info});
 
   final ClipboardPodcastInfo info;
 
@@ -1469,11 +1477,32 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    final accent = cs.primary;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final accent = isDark ? PodcastHomeColors.accent(context) : cs.primary;
+    final cardBg = isDark
+        ? PodcastHomeColors.card(context)
+        : cs.surfaceContainerLow.withValues(alpha: 0.65);
+    final borderOuter = isDark
+        ? PodcastHomeColors.borderSubtle(context)
+        : cs.outlineVariant.withValues(alpha: 0.45);
+    final onSurface = isDark ? PodcastHomeColors.label(context) : cs.onSurface;
+    final onVar = isDark
+        ? PodcastHomeColors.meta(context)
+        : cs.onSurfaceVariant;
+    final fieldFill = isDark
+        ? PodcastHomeColors.chipFill(context)
+        : cs.surfaceContainerLow;
+    final iconBg = isDark
+        ? PodcastHomeColors.card(context)
+        : cs.surfaceContainerHighest;
 
     final inputBorder = OutlineInputBorder(
       borderRadius: BorderRadius.circular(Tokens.radiusSm),
-      borderSide: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+      borderSide: BorderSide(
+        color: isDark
+            ? Colors.white.withValues(alpha: 0.14)
+            : cs.outlineVariant.withValues(alpha: 0.5),
+      ),
     );
 
     Widget compactTimeRow({
@@ -1491,7 +1520,7 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
         minimumSize: const Size(36, 36),
         fixedSize: const Size(36, 36),
         foregroundColor: accent,
-        backgroundColor: cs.surfaceContainerHighest,
+        backgroundColor: iconBg,
       );
       return Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1504,7 +1533,7 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
                 label,
                 style: tt.labelSmall?.copyWith(
                   fontWeight: FontWeight.w700,
-                  color: cs.onSurfaceVariant,
+                  color: onVar,
                 ),
               ),
             ),
@@ -1526,14 +1555,14 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
               ],
               style: tt.bodyMedium?.copyWith(
                 fontWeight: FontWeight.w700,
-                color: cs.onSurface,
+                color: onSurface,
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
               decoration: InputDecoration(
                 hintText: '5:30',
-                hintStyle: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                hintStyle: tt.bodySmall?.copyWith(color: onVar),
                 filled: true,
-                fillColor: cs.surfaceContainerLow,
+                fillColor: fieldFill,
                 isDense: true,
                 contentPadding: const EdgeInsets.symmetric(
                   horizontal: 8,
@@ -1585,10 +1614,8 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
     return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: cs.outlineVariant.withValues(alpha: 0.45),
-        ),
-        color: cs.surfaceContainerLow.withValues(alpha: 0.65),
+        border: Border.all(color: borderOuter),
+        color: cardBg,
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
@@ -1601,7 +1628,7 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
               style: tt.titleSmall?.copyWith(
                 fontWeight: FontWeight.w800,
                 letterSpacing: -0.2,
-                color: cs.onSurface,
+                color: onSurface,
               ),
             ),
             const SizedBox(height: 6),
@@ -1610,7 +1637,7 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
               style: tt.bodySmall?.copyWith(
                 fontWeight: FontWeight.w600,
                 height: 1.2,
-                color: cs.onSurface,
+                color: onSurface,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -1619,10 +1646,7 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
               const SizedBox(height: 2),
               Text(
                 widget.info.podcastName,
-                style: tt.labelSmall?.copyWith(
-                  color: cs.onSurfaceVariant,
-                  height: 1.15,
-                ),
+                style: tt.labelSmall?.copyWith(color: onVar, height: 1.15),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -1632,7 +1656,7 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
               'Jump (min)',
               style: tt.labelSmall?.copyWith(
                 fontWeight: FontWeight.w700,
-                color: cs.onSurfaceVariant,
+                color: onVar,
               ),
             ),
             const SizedBox(height: 4),
@@ -1663,19 +1687,25 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
                           higLightTap();
                           setState(() => _stepMinutes = m);
                         },
-                        selectedColor: cs.primaryContainer,
-                        backgroundColor: cs.surfaceContainerHighest,
+                        selectedColor: isDark
+                            ? accent.withValues(alpha: 0.28)
+                            : cs.primaryContainer,
+                        backgroundColor: isDark
+                            ? PodcastHomeColors.card(context)
+                            : cs.surfaceContainerHighest,
                         side: BorderSide(
                           color: _stepMinutes == m
-                              ? cs.primary.withValues(alpha: 0.35)
-                              : cs.outlineVariant.withValues(alpha: 0.4),
+                              ? accent.withValues(alpha: isDark ? 0.75 : 0.35)
+                              : (isDark
+                                    ? PodcastHomeColors.borderSubtle(context)
+                                    : cs.outlineVariant.withValues(alpha: 0.4)),
                         ),
                         labelStyle: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
                           color: _stepMinutes == m
-                              ? cs.onPrimaryContainer
-                              : cs.onSurfaceVariant,
+                              ? (isDark ? Colors.white : cs.onPrimaryContainer)
+                              : onVar,
                         ),
                       ),
                     ),
@@ -1702,32 +1732,44 @@ class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
             ),
             const SizedBox(height: 6),
             Text(
-              'Length: ${_humanClipDuration(
-                _parseEpisodePositionInput(_startC.text) ?? _start,
-                _parseEpisodePositionInput(_endC.text) ?? _end,
-              )}',
+              'Length: ${_humanClipDuration(_parseEpisodePositionInput(_startC.text) ?? _start, _parseEpisodePositionInput(_endC.text) ?? _end)}',
               textAlign: TextAlign.center,
               style: tt.labelSmall?.copyWith(
                 fontWeight: FontWeight.w600,
-                color: cs.onSurfaceVariant,
+                color: onVar,
               ),
             ),
             const SizedBox(height: 10),
-            PSNButton(
-              label: 'Save moment',
-              variant: ButtonVariant.primaryDark,
-              size: ButtonSize.md,
-              icon: const Icon(Icons.check_rounded, size: 20),
-              fullWidth: true,
-              onTap: _save,
-            ),
+            if (isDark)
+              FilledButton.icon(
+                onPressed: _save,
+                icon: const Icon(Icons.check_rounded, size: 20),
+                label: const Text('Save moment'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                  backgroundColor: accent,
+                  foregroundColor: Colors.white,
+                ),
+              )
+            else
+              PSNButton(
+                label: 'Save moment',
+                variant: ButtonVariant.primaryDark,
+                size: ButtonSize.md,
+                icon: const Icon(Icons.check_rounded, size: 20),
+                fullWidth: true,
+                onTap: _save,
+              ),
             const SizedBox(height: 4),
-            PSNButton(
-              label: 'Cancel',
-              variant: ButtonVariant.ghost,
-              size: ButtonSize.sm,
-              fullWidth: true,
-              onTap: () => Navigator.of(context).pop(null),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: Text(
+                'Cancel',
+                style: TextStyle(
+                  color: isDark ? onVar : cs.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
           ],
         ),
@@ -1845,10 +1887,7 @@ class _SelectionBottomBar extends StatelessWidget {
 }
 
 class _MomentFilterBar extends StatelessWidget {
-  const _MomentFilterBar({
-    required this.value,
-    required this.onChanged,
-  });
+  const _MomentFilterBar({required this.value, required this.onChanged});
 
   final _MomentFilter value;
   final ValueChanged<_MomentFilter> onChanged;
@@ -1870,44 +1909,41 @@ class _MomentFilterBar extends StatelessWidget {
 
     Widget pill(_MomentFilter f) {
       final selected = value == f;
-      return Padding(
-        padding: const EdgeInsets.only(right: 8),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: () {
-              higLightTap();
-              onChanged(f);
-            },
-            borderRadius: BorderRadius.circular(50),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: selected
-                    ? (Theme.of(context).brightness == Brightness.dark
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            higLightTap();
+            onChanged(f);
+          },
+          borderRadius: BorderRadius.circular(50),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: selected
+                  ? (Theme.of(context).brightness == Brightness.dark
                         ? Colors.white
                         : Theme.of(context).colorScheme.primary)
-                    : PodcastHomeColors.card(context),
-                borderRadius: BorderRadius.circular(50),
-                border: selected
-                    ? null
-                    : Border.all(
-                        color: PodcastHomeColors.borderSubtle(context),
-                        width: 1,
-                      ),
-              ),
-              child: Text(
-                _label(f),
-                style: tt.labelLarge?.copyWith(
-                  color: selected
-                      ? (Theme.of(context).brightness == Brightness.dark
-                          ? SnipdStyle.bgDeep
+                  : PodcastHomeColors.card(context),
+              borderRadius: BorderRadius.circular(50),
+              border: selected
+                  ? null
+                  : Border.all(
+                      color: PodcastHomeColors.borderSubtle(context),
+                      width: 1,
+                    ),
+            ),
+            child: Text(
+              _label(f),
+              style: tt.labelLarge?.copyWith(
+                color: selected
+                    ? (Theme.of(context).brightness == Brightness.dark
+                          ? PodcastDarkTokens.bgDeep
                           : Theme.of(context).colorScheme.onPrimary)
-                      : PodcastHomeColors.label(context),
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  fontSize: 13,
-                ),
+                    : PodcastHomeColors.label(context),
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                fontSize: 13,
               ),
             ),
           ),
@@ -1919,10 +1955,16 @@ class _MomentFilterBar extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Expanded(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: _MomentFilter.values.map(pill).toList(),
+          // perf: Horizontal ListView needs a *bounded* cross-axis height here; inside
+          // CustomScrollView → SliverToBoxAdapter the Row can get infinite maxHeight,
+          // which breaks layout and can make the feed (and “summary” rows) disappear.
+          child: SizedBox(
+            height: 48,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _MomentFilter.values.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (context, i) => pill(_MomentFilter.values[i]),
             ),
           ),
         ),
@@ -1949,9 +1991,12 @@ class _MomentFilterBar extends StatelessWidget {
                   child: Text(
                     _label(f),
                     style: TextStyle(
-                      color: value == f ? PodcastHomeColors.accent(context) : PodcastHomeColors.label(context),
-                      fontWeight:
-                          value == f ? FontWeight.w700 : FontWeight.w400,
+                      color: value == f
+                          ? PodcastHomeColors.accent(context)
+                          : PodcastHomeColors.label(context),
+                      fontWeight: value == f
+                          ? FontWeight.w700
+                          : FontWeight.w400,
                     ),
                   ),
                 ),
@@ -1974,7 +2019,7 @@ class _HomeSkeleton extends StatelessWidget {
       cacheExtent: _kScrollCacheExtent,
       slivers: [
         SliverToBoxAdapter(
-          child: _SnipdHomeHeader(
+          child: _PodcastHomeHeader(
             totalCount: 0,
             onMorePressed: onMorePressed,
           ),
@@ -1985,8 +2030,7 @@ class _HomeSkeleton extends StatelessWidget {
             addAutomaticKeepAlives: false,
             addRepaintBoundaries: false,
             itemBuilder: (_, _) => const _AppleSessionSkeletonCard(),
-            separatorBuilder: (_, _) =>
-                const SizedBox(height: _kCardSpacing),
+            separatorBuilder: (_, _) => const SizedBox(height: _kCardSpacing),
             itemCount: 3,
           ),
         ),

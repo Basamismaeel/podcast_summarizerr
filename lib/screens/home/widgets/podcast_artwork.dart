@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/image_decode_cache.dart';
 import '../../../core/tokens.dart';
 
 /// 56×56 (list) or 40×40 (mini bar) podcast artwork with network / gradient fallback.
@@ -24,7 +25,8 @@ class PodcastArtwork extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final url = imageUrl?.trim();
-    final hasUrl = url != null &&
+    final hasUrl =
+        url != null &&
         url.isNotEmpty &&
         (url.startsWith('http://') || url.startsWith('https://'));
 
@@ -47,13 +49,15 @@ class PodcastArtwork extends StatelessWidget {
         child: CachedNetworkImage(
           imageUrl: url,
           fit: BoxFit.cover,
+          // perf: Decode/cache at display resolution, not full bitmap.
+          memCacheWidth: decodeCacheExtent(context, size),
+          memCacheHeight: decodeCacheExtent(context, size),
           fadeInDuration: Tokens.durationFast,
           fadeOutDuration: Tokens.durationFast,
           fadeInCurve: Tokens.springCurve,
           fadeOutCurve: Tokens.springCurve,
-          placeholder: (context, progress) => Container(
-            color: _placeholderGray,
-          ),
+          placeholder: (context, progress) =>
+              Container(color: _placeholderGray),
           errorWidget: (context, imageUrl, error) =>
               _GradientInitials(label: labelForInitials, size: size),
         ),
@@ -63,10 +67,7 @@ class PodcastArtwork extends StatelessWidget {
 }
 
 class _GradientInitials extends StatelessWidget {
-  const _GradientInitials({
-    required this.label,
-    required this.size,
-  });
+  const _GradientInitials({required this.label, required this.size});
 
   final String label;
   final double size;
@@ -99,10 +100,7 @@ class _GradientInitials extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
-            Color(0xFF6366F1),
-            Color(0xFF8B5CF6),
-          ],
+          colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
         ),
       ),
       alignment: Alignment.center,

@@ -5,9 +5,16 @@ import 'package:flutter_tts/flutter_tts.dart';
 
 /// Inline “Listen” control: speaks [plainText] with [FlutterTts]; pause toggles stop.
 class SummaryListenControl extends StatefulWidget {
-  const SummaryListenControl({super.key, required this.plainText});
+  const SummaryListenControl({
+    super.key,
+    required this.plainText,
+    this.filledPrimaryListenButton = false,
+  });
 
   final String plainText;
+
+  /// Solid white primary listen control (cinematic dark summary layout).
+  final bool filledPrimaryListenButton;
 
   @override
   State<SummaryListenControl> createState() => _SummaryListenControlState();
@@ -51,8 +58,40 @@ class _SummaryListenControlState extends State<SummaryListenControl> {
 
   @override
   Widget build(BuildContext context) {
+    final enabled = widget.plainText.trim().isNotEmpty;
+    if (widget.filledPrimaryListenButton) {
+      return SizedBox(
+        width: double.infinity,
+        height: 40,
+        child: FilledButton.icon(
+          onPressed: enabled ? _toggle : null,
+          style: FilledButton.styleFrom(
+            backgroundColor: Colors.white,
+            foregroundColor: const Color(0xFF0D0F0A),
+            disabledBackgroundColor: Colors.white.withValues(alpha: 0.35),
+            disabledForegroundColor: const Color(
+              0xFF0D0F0A,
+            ).withValues(alpha: 0.45),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            minimumSize: const Size(0, 40),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          icon: Icon(
+            _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+            size: 22,
+          ),
+          label: Text(
+            _playing ? 'Pause' : 'Listen',
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+          ),
+        ),
+      );
+    }
     return TextButton.icon(
-      onPressed: widget.plainText.trim().isEmpty ? null : _toggle,
+      onPressed: enabled ? _toggle : null,
       icon: Icon(
         _playing ? Icons.pause_rounded : Icons.volume_up_rounded,
         size: 20,

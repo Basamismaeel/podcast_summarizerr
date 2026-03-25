@@ -9,7 +9,7 @@ import '../../../core/artwork_color_service.dart';
 import '../../../core/haptics.dart';
 import '../../../core/session_display_kind.dart';
 import '../../../core/podcast_home_colors.dart';
-import '../../../core/snipd_style.dart';
+import '../../../core/podcast_dark_tokens.dart';
 import '../../../core/summary_text_display.dart';
 import '../../../core/tokens.dart';
 import '../../../database/database.dart';
@@ -30,8 +30,9 @@ class SessionCard extends StatefulWidget {
     this.selectionMode = false,
     this.isSelected = false,
     this.onSelectionToggle,
-    /// Snipd-style episode row (home list).
-    this.snipdListingStyle = false,
+
+    /// Compact dark row used on the home feed.
+    this.homeRowCompactStyle = false,
   });
 
   final ListeningSession session;
@@ -42,7 +43,7 @@ class SessionCard extends StatefulWidget {
   final bool selectionMode;
   final bool isSelected;
   final VoidCallback? onSelectionToggle;
-  final bool snipdListingStyle;
+  final bool homeRowCompactStyle;
 
   @override
   State<SessionCard> createState() => _SessionCardState();
@@ -92,8 +93,7 @@ class _SessionCardState extends State<SessionCard>
       _loadAccent();
     }
     final now = SessionStatus.fromJson(widget.session.status);
-    if (_prevStatus == SessionStatus.summarizing &&
-        now == SessionStatus.done) {
+    if (_prevStatus == SessionStatus.summarizing && now == SessionStatus.done) {
       _glowController.forward(from: 0);
     }
     _prevStatus = now;
@@ -119,8 +119,8 @@ class _SessionCardState extends State<SessionCard>
     final status = SessionStatus.fromJson(widget.session.status);
     final saveMethod = SaveMethod.fromJson(widget.session.saveMethod);
 
-    if (widget.snipdListingStyle) {
-      return _buildSnipdListing(context, cs, tt, status);
+    if (widget.homeRowCompactStyle) {
+      return _buildHomeRowCompact(context, cs, tt, status);
     }
     final bulletPreview = widget.session.bullet1;
     final hasPreview = status == SessionStatus.done && bulletPreview != null;
@@ -154,11 +154,7 @@ class _SessionCardState extends State<SessionCard>
             borderRadius: BorderRadius.circular(Tokens.radiusMd),
             boxShadow: [
               if (t > 0.01)
-                BoxShadow(
-                  color: greenGlow,
-                  blurRadius: 28,
-                  spreadRadius: 2,
-                ),
+                BoxShadow(color: greenGlow, blurRadius: 28, spreadRadius: 2),
             ],
           ),
           child: child,
@@ -168,10 +164,7 @@ class _SessionCardState extends State<SessionCard>
     );
 
     if (widget.selectionMode) {
-      return Transform.translate(
-        offset: const Offset(0, -2),
-        child: shadowed,
-      );
+      return Transform.translate(offset: const Offset(0, -2), child: shadowed);
     }
 
     return Transform.translate(
@@ -224,7 +217,7 @@ class _SessionCardState extends State<SessionCard>
     );
   }
 
-  Widget _buildSnipdListing(
+  Widget _buildHomeRowCompact(
     BuildContext context,
     ColorScheme cs,
     TextTheme tt,
@@ -252,7 +245,9 @@ class _SessionCardState extends State<SessionCard>
           padding: const EdgeInsets.symmetric(vertical: 16),
           decoration: BoxDecoration(
             border: Border(
-              bottom: BorderSide(color: PodcastHomeColors.borderSubtle(context)),
+              bottom: BorderSide(
+                color: PodcastHomeColors.borderSubtle(context),
+              ),
             ),
           ),
           child: Row(
@@ -265,10 +260,9 @@ class _SessionCardState extends State<SessionCard>
                     value: widget.isSelected,
                     onChanged: (_) => widget.onSelectionToggle?.call(),
                     activeColor: PodcastHomeColors.accent(context),
-                    checkColor:
-                        Theme.of(context).brightness == Brightness.dark
-                            ? SnipdStyle.bgDeep
-                            : Theme.of(context).colorScheme.onPrimary,
+                    checkColor: Theme.of(context).brightness == Brightness.dark
+                        ? PodcastDarkTokens.bgDeep
+                        : Theme.of(context).colorScheme.onPrimary,
                   ),
                 ),
               ],
@@ -293,7 +287,9 @@ class _SessionCardState extends State<SessionCard>
                               height: 18,
                               alignment: Alignment.center,
                               decoration: BoxDecoration(
-                                color: PodcastHomeColors.accent(context).withValues(alpha: 0.15),
+                                color: PodcastHomeColors.accent(
+                                  context,
+                                ).withValues(alpha: 0.15),
                                 shape: BoxShape.circle,
                               ),
                               child: Icon(
@@ -355,8 +351,9 @@ class _SessionCardState extends State<SessionCard>
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: PodcastHomeColors.meta(context)
-                                      .withValues(alpha: 0.12),
+                                  color: PodcastHomeColors.meta(
+                                    context,
+                                  ).withValues(alpha: 0.12),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Text(
@@ -372,7 +369,7 @@ class _SessionCardState extends State<SessionCard>
                       ),
                     ],
                     const SizedBox(height: 8),
-                    _SnipdMetaRow(session: s, status: status),
+                    _HomeRowMetaRow(session: s, status: status),
                     if (hasPreview) ...[
                       const SizedBox(height: 8),
                       Text(
@@ -412,7 +409,7 @@ class _SessionCardState extends State<SessionCard>
     }
 
     return Slidable(
-      key: ValueKey('slidable-snipd-${widget.session.id}'),
+      key: ValueKey('slidable-home-row-${widget.session.id}'),
       startActionPane: ActionPane(
         motion: const DrawerMotion(),
         extentRatio: 0.28,
@@ -504,10 +501,7 @@ class _SessionCardState extends State<SessionCard>
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Container(
-                          width: 3,
-                          color: borderColor ?? cs.primary,
-                        ),
+                        Container(width: 3, color: borderColor ?? cs.primary),
                         Expanded(
                           child: Padding(
                             padding: const EdgeInsets.all(Tokens.spaceMd),
@@ -548,10 +542,11 @@ class _SessionCardState extends State<SessionCard>
                                               style: GoogleFonts.syne(
                                                 textStyle: tt.titleMedium
                                                     ?.copyWith(
-                                                  fontWeight: FontWeight.w700,
-                                                  color: cs.onSurface,
-                                                  height: 1.2,
-                                                ),
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                      color: cs.onSurface,
+                                                      height: 1.2,
+                                                    ),
                                               ),
                                               maxLines: 2,
                                               overflow: TextOverflow.ellipsis,
@@ -570,7 +565,9 @@ class _SessionCardState extends State<SessionCard>
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       ),
-                                      const SizedBox(height: Tokens.spaceXs + 2),
+                                      const SizedBox(
+                                        height: Tokens.spaceXs + 2,
+                                      ),
                                       _MetadataRowStyled(
                                         session: widget.session,
                                         saveMethod: saveMethod,
@@ -587,8 +584,9 @@ class _SessionCardState extends State<SessionCard>
                                               end: Alignment.bottomCenter,
                                               colors: [
                                                 Colors.white,
-                                                Colors.white
-                                                    .withValues(alpha: 0),
+                                                Colors.white.withValues(
+                                                  alpha: 0,
+                                                ),
                                               ],
                                               stops: const [0.55, 1],
                                             ).createShader(bounds);
@@ -699,11 +697,8 @@ class _SessionCardState extends State<SessionCard>
   }
 }
 
-class _SnipdMetaRow extends StatelessWidget {
-  const _SnipdMetaRow({
-    required this.session,
-    required this.status,
-  });
+class _HomeRowMetaRow extends StatelessWidget {
+  const _HomeRowMetaRow({required this.session, required this.status});
 
   final ListeningSession session;
   final SessionStatus status;
@@ -750,7 +745,10 @@ class _SnipdMetaRow extends StatelessWidget {
         ),
         Text(
           '·',
-          style: TextStyle(color: PodcastHomeColors.meta(context), fontSize: 12),
+          style: TextStyle(
+            color: PodcastHomeColors.meta(context),
+            fontSize: 12,
+          ),
         ),
         Text(
           durationPart,
@@ -784,9 +782,7 @@ class _MetadataRowStyled extends StatelessWidget {
     );
     final dur = _durationMinutes(session);
     final chapterBased = SessionDisplayKind.isChapterBased(session);
-    final durationPart = chapterBased
-        ? null
-        : (dur > 0 ? '$dur min' : '—');
+    final durationPart = chapterBased ? null : (dur > 0 ? '$dur min' : '—');
     final metaMain = chapterBased
         ? SessionDisplayKind.shortMetaLabel(session)
         : _rangeLabel(session);
@@ -805,8 +801,7 @@ class _MetadataRowStyled extends StatelessWidget {
           child: Text(
             metaMain,
             style: tt.labelSmall?.copyWith(
-              fontFamily:
-                  chapterBased ? null : 'monospace',
+              fontFamily: chapterBased ? null : 'monospace',
               fontFeatures: chapterBased
                   ? null
                   : const [FontFeature.tabularFigures()],
@@ -829,10 +824,7 @@ class _MetadataRowStyled extends StatelessWidget {
             ),
           ),
         if (durationPart != null) const SizedBox(width: 6),
-        Text(
-          date,
-          style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant),
-        ),
+        Text(date, style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant)),
       ],
     );
   }
@@ -910,10 +902,7 @@ class _StatusDot extends StatelessWidget {
           child: SizedBox(
             width: 14,
             height: 14,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: cs.primary,
-            ),
+            child: CircularProgressIndicator(strokeWidth: 2, color: cs.primary),
           ),
         );
       case SessionStatus.recording:
@@ -931,11 +920,7 @@ class _StatusDot extends StatelessWidget {
       case SessionStatus.error:
         return Padding(
           padding: const EdgeInsets.only(top: 6),
-          child: Icon(
-            Icons.error_outline_rounded,
-            size: 18,
-            color: cs.error,
-          ),
+          child: Icon(Icons.error_outline_rounded, size: 18, color: cs.error),
         );
     }
   }
@@ -959,8 +944,8 @@ class _ActionTile extends StatelessWidget {
       title: Text(
         label,
         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-              color: isDestructive ? cs.error : cs.onSurface,
-            ),
+          color: isDestructive ? cs.error : cs.onSurface,
+        ),
       ),
       onTap: onTap,
     );

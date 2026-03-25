@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../core/podcast_home_colors.dart';
 import '../core/tokens.dart';
 
 class PSNBottomSheet extends StatelessWidget {
@@ -11,6 +12,7 @@ class PSNBottomSheet extends StatelessWidget {
     required this.child,
     this.title,
     this.showHandle = true,
+
     /// Max fraction of usable viewport height (e.g. 0.72 for dense forms that must not scroll).
     this.maxHeightFraction = 0.52,
   });
@@ -34,11 +36,8 @@ class PSNBottomSheet extends StatelessWidget {
       showDragHandle: false,
       useSafeArea: true,
       enableDrag: true,
-      builder: (_) => PSNBottomSheet(
-        title: title,
-        showHandle: showHandle,
-        child: child,
-      ),
+      builder: (_) =>
+          PSNBottomSheet(title: title, showHandle: showHandle, child: child),
     );
   }
 
@@ -55,51 +54,60 @@ class PSNBottomSheet extends StatelessWidget {
 
     final mq = MediaQuery.of(context);
     // Space above keyboard — never treat the sheet as “almost full screen”.
-    final availableMain = (mq.size.height - mq.viewInsets.bottom - mq.padding.vertical)
-        .clamp(240.0, mq.size.height);
+    final availableMain =
+        (mq.size.height - mq.viewInsets.bottom - mq.padding.vertical).clamp(
+          240.0,
+          mq.size.height,
+        );
     final frac = maxHeightFraction.clamp(0.35, 0.92);
     final maxSheetHeight = availableMain * frac;
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final sheetTint = isDark
+        ? PodcastHomeColors.card(context).withValues(alpha: 0.94)
+        : cs.surfaceContainerHigh.withValues(alpha: 0.94);
 
     final sheetRows = <Widget Function()>[
       if (showHandle)
         () => Padding(
-              padding: const EdgeInsets.only(top: Tokens.spaceSm),
-              child: Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: cs.onSurfaceVariant.withValues(alpha: 0.3),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
+          padding: const EdgeInsets.only(top: Tokens.spaceSm),
+          child: Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: cs.onSurfaceVariant.withValues(alpha: 0.3),
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
+          ),
+        ),
       if (title != null)
         () => Padding(
-              padding: const EdgeInsets.fromLTRB(
-                Tokens.spaceMd,
-                Tokens.spaceMd,
-                Tokens.spaceMd,
-                Tokens.spaceSm,
-              ),
-              child: Text(
-                title!,
-                style: tt.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.2,
-                ),
-              ),
-            ),
-      () => Padding(
-            padding: EdgeInsets.fromLTRB(
-              Tokens.spaceMd,
-              title == null ? Tokens.spaceMd : 0,
-              Tokens.spaceMd,
-              mq.viewPadding.bottom + Tokens.spaceMd,
-            ),
-            child: child,
+          padding: const EdgeInsets.fromLTRB(
+            Tokens.spaceMd,
+            Tokens.spaceMd,
+            Tokens.spaceMd,
+            Tokens.spaceSm,
           ),
+          child: Text(
+            title!,
+            style: tt.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.2,
+              color: isDark ? PodcastHomeColors.title(context) : null,
+            ),
+          ),
+        ),
+      () => Padding(
+        padding: EdgeInsets.fromLTRB(
+          Tokens.spaceMd,
+          title == null ? Tokens.spaceMd : 0,
+          Tokens.spaceMd,
+          mq.viewPadding.bottom + Tokens.spaceMd,
+        ),
+        child: child,
+      ),
     ];
 
     return RepaintBoundary(
@@ -108,7 +116,7 @@ class PSNBottomSheet extends StatelessWidget {
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
           child: Material(
-            color: cs.surfaceContainerHigh.withValues(alpha: 0.94),
+            color: sheetTint,
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: maxSheetHeight),
               child: ListView.builder(

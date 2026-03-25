@@ -94,10 +94,8 @@ void _mergeApiKeysFromPlatform() {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  assert(() {
-    debugProfileBuildsEnabled = true;
-    return true;
-  }());
+  // perf: Avoid debugProfileBuildsEnabled — it instruments every build and skews
+  // scroll/frame timings. Use `flutter run --profile` + DevTools for real data (README).
 
   await _loadDotenv();
 
@@ -126,11 +124,7 @@ Future<void> main() async {
   final onboardingDone = prefs.getBool('onboarding_done') ?? false;
   debugPrint('[main] onboarding_done at startup: $onboardingDone');
 
-  runApp(
-    const ProviderScope(
-      child: _AppWithPrefs(),
-    ),
-  );
+  runApp(const ProviderScope(child: _AppWithPrefs()));
 }
 
 class _AppWithPrefs extends StatefulWidget {

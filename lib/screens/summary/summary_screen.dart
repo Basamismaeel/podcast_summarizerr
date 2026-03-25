@@ -1,6 +1,4 @@
-import 'dart:async'
-    show Future, Timer, scheduleMicrotask, unawaited;
-import 'dart:convert';
+import 'dart:async' show Future, Timer, unawaited;
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -19,6 +17,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/content_chat_prompts.dart';
+import '../../core/image_decode_cache.dart';
 import '../../core/haptics.dart';
 import '../../core/moments_stats_service.dart';
 import '../../core/session_display_kind.dart';
@@ -36,49 +35,31 @@ import '../../widgets/confirm_delete_session_sheet.dart';
 import '../../widgets/content_chat.dart';
 import '../../widgets/liquid_loader.dart';
 import '../../widgets/summary_listen_row.dart';
+import '../../widgets/summary_episode_chrome.dart';
 import '../../widgets/typewrite_text.dart';
 import 'widgets/share_card_generator.dart';
 
-final _kBulletTsRe =
-    RegExp(r'^\[(\d{1,4}:\d{2}(?::\d{2})?)\]\s*');
-
-// #region agent log
-const _kAgentLogPath =
-    '/Users/basamismaeel/podcast_Summerizer/.cursor/debug-1f97d9.log';
-
-void _agentLog(
-  String hypothesisId,
-  String location,
-  String message, [
-  Map<String, Object?>? data,
-]) {
-  try {
-    final payload = <String, Object?>{
-      'sessionId': '1f97d9',
-      'hypothesisId': hypothesisId,
-      'location': location,
-      'message': message,
-      'data': data ?? <String, Object?>{},
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-    };
-    final line = jsonEncode(payload);
-    debugPrint('[agent] $line');
-    // Avoid sync disk I/O on scroll/gesture paths (was janking frames).
-    scheduleMicrotask(() {
-      try {
-        File(_kAgentLogPath).writeAsStringSync('$line\n', mode: FileMode.append);
-      } catch (_) {}
-    });
-  } catch (_) {}
-}
-
-// #endregion
+final _kBulletTsRe = RegExp(r'^\[(\d{1,4}:\d{2}(?::\d{2})?)\]\s*');
 
 /// Comfortable reading measure for summary body (phones fill width; tablets cap).
 const double _kSummaryContentMaxWidth = 560;
 
 const Color _kSummaryCyan = Color(0xFF00D4FF);
-const Color _kApplePodcastsPurple = Color(0xFFB150E2);
+const Color _kSummaryOnWhiteFg = Color(0xFF0D0F0A);
+
+/// Compact white / near-black control (Listen row, Open in Spotify/Apple, chips).
+ButtonStyle _summaryWhitePrimaryButtonStyle() {
+  return FilledButton.styleFrom(
+    backgroundColor: Colors.white,
+    foregroundColor: _kSummaryOnWhiteFg,
+    disabledBackgroundColor: Colors.white.withValues(alpha: 0.35),
+    disabledForegroundColor: _kSummaryOnWhiteFg.withValues(alpha: 0.45),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+    minimumSize: const Size(0, 40),
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  );
+}
 
 /// `[MM:SS]` / `[H:MM:SS]` label → seconds (for player deep links).
 int? _parseTimestampLabelToSec(String at) {
@@ -101,8 +82,9 @@ Future<void> _shareInsightCard(BuildContext context, String text) async {
   if (t.isEmpty) return;
   try {
     final box = context.findRenderObject() as RenderBox?;
-    final origin =
-        box == null ? null : box.localToGlobal(Offset.zero) & box.size;
+    final origin = box == null
+        ? null
+        : box.localToGlobal(Offset.zero) & box.size;
     final res = await Share.share(t, sharePositionOrigin: origin);
     if (res.status == ShareResultStatus.unavailable) {
       await Clipboard.setData(ClipboardData(text: t));
@@ -193,11 +175,13 @@ String _bookSectionSharePlain(String? title, int sectionIndex, String body) {
 }
 
 TextStyle _summarySectionLabelStyle(BuildContext context) => TextStyle(
-      fontSize: 12,
-      fontWeight: FontWeight.w600,
-      letterSpacing: 0.4,
-      color: SummaryThemeColors.textMuted(context),
-    );
+  fontSize: 12,
+  fontWeight: FontWeight.w600,
+  letterSpacing: 0.4,
+  color:
+      EpisodeArtworkThemeScope.maybeOf(context)?.meta ??
+      SummaryThemeColors.textMuted(context),
+);
 
 /// Leading `[MM:SS]` / `[H:MM:SS]` from pipeline (episode position).
 ({String? at, String body}) _splitEpisodeTimestamp(String raw) {
@@ -236,35 +220,29 @@ class _EpisodeTimestampPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final cs = Theme.of(context).colorScheme;
-    final fg = isDark ? Colors.white.withValues(alpha: 0.9) : cs.onSurface;
+    final fg = isDark ? _kSummaryOnWhiteFg : cs.onSurface;
+    final bg = isDark
+        ? Colors.white
+        : cs.surfaceContainerHighest.withValues(alpha: 0.9);
+    final border = isDark ? null : Border.all(color: cs.outlineVariant);
     return Semantics(
       label: 'Episode timestamp $at',
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-          color: isDark
-              ? Colors.black.withValues(alpha: 0.38)
-              : cs.surfaceContainerHighest.withValues(alpha: 0.9),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: isDark
-                ? Colors.white.withValues(alpha: 0.18)
-                : cs.outlineVariant,
-          ),
+          color: bg,
+          borderRadius: BorderRadius.circular(12),
+          border: border,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.schedule,
-              size: 14,
-              color: fg,
-            ),
-            const SizedBox(width: 6),
+            Icon(Icons.schedule, size: 13, color: fg),
+            const SizedBox(width: 5),
             Text(
               at,
               style: GoogleFonts.dmMono(
-                fontSize: 12,
+                fontSize: 11.5,
                 fontWeight: FontWeight.w600,
                 color: fg,
                 letterSpacing: 0.3,
@@ -305,9 +283,9 @@ class _TappableEpisodeTimestampPillState
       color: Colors.transparent,
       child: InkWell(
         onTap: _onTap,
-        borderRadius: BorderRadius.circular(20),
-        splashColor: Colors.white.withValues(alpha: 0.12),
-        highlightColor: Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        splashColor: _kSummaryOnWhiteFg.withValues(alpha: 0.08),
+        highlightColor: _kSummaryOnWhiteFg.withValues(alpha: 0.04),
         child: _EpisodeTimestampPill(at: widget.at),
       ),
     );
@@ -338,8 +316,9 @@ String _chapterHeroSubtitle(ListeningSession session) {
     final t = ch['title'] as String?;
     if (t != null && t.trim().isNotEmpty) return t.trim();
   }
-  final gp =
-      GutenbergBookService.parseStoredChaptersPayload(session.chaptersJson);
+  final gp = GutenbergBookService.parseStoredChaptersPayload(
+    session.chaptersJson,
+  );
   if (gp != null && gp.chapters.isNotEmpty) {
     final i = gp.selectedChapterIndex.clamp(0, gp.chapters.length - 1);
     final t = gp.chapters[i].chapterTitle.trim();
@@ -350,15 +329,18 @@ String _chapterHeroSubtitle(ListeningSession session) {
 
 /// User-facing explanation of which audio window the summary reflects.
 String _summaryTrustLine(ListeningSession s) {
-  final gutenbergPayload =
-      GutenbergBookService.parseStoredChaptersPayload(s.chaptersJson);
-  final isGutenberg = s.transcriptSource == 'gutenberg' ||
-      gutenbergPayload != null;
+  final gutenbergPayload = GutenbergBookService.parseStoredChaptersPayload(
+    s.chaptersJson,
+  );
+  final isGutenberg =
+      s.transcriptSource == 'gutenberg' || gutenbergPayload != null;
   if (isGutenberg) {
     var chapterName = 'the selected chapter';
     if (gutenbergPayload != null && gutenbergPayload.chapters.isNotEmpty) {
-      final i = gutenbergPayload.selectedChapterIndex
-          .clamp(0, gutenbergPayload.chapters.length - 1);
+      final i = gutenbergPayload.selectedChapterIndex.clamp(
+        0,
+        gutenbergPayload.chapters.length - 1,
+      );
       final t = gutenbergPayload.chapters[i].chapterTitle.trim();
       if (t.isNotEmpty) chapterName = t;
     }
@@ -366,7 +348,9 @@ String _summaryTrustLine(ListeningSession s) {
         'chapter list. Gemini summarizes the full text of that chapter only.';
   }
 
-  final audiblePayload = AudibleBookService.parseChaptersPayload(s.chaptersJson);
+  final audiblePayload = AudibleBookService.parseChaptersPayload(
+    s.chaptersJson,
+  );
   if (s.transcriptSource == 'audible_pg') {
     var chapterName = 'the selected catalog chapter';
     if (audiblePayload != null && audiblePayload.chapters.isNotEmpty) {
@@ -387,7 +371,8 @@ String _summaryTrustLine(ListeningSession s) {
         'edition. Text may differ slightly from your audiobook\'s narration.';
   }
 
-  final isAudible = s.transcriptSource == 'audible' ||
+  final isAudible =
+      s.transcriptSource == 'audible' ||
       audiblePayload != null ||
       (s.sourceApp?.toLowerCase() == 'audible');
   if (isAudible) {
@@ -418,6 +403,17 @@ List<String> _bulletsPlainForShare(List<String> bullets) =>
     bullets.map((b) => _splitEpisodeTimestamp(b).body).toList();
 
 /// Spotify / Apple **page** link for opening the player app (not the RSS MP3 URL).
+String _summaryShortDuration(ListeningSession s) {
+  final end = s.endTimeSec;
+  if (end == null || end <= s.startTimeSec) return '';
+  final m = ((end - s.startTimeSec) / 60).round();
+  if (m <= 0) return '';
+  final h = m ~/ 60;
+  final r = m % 60;
+  if (h > 0) return '${h}h ${r}min';
+  return '${m}min';
+}
+
 String? _listenUrlForPlayer(ListeningSession s) {
   final a = s.sourceShareUrl?.trim();
   if (a != null && a.isNotEmpty) return a;
@@ -428,6 +424,15 @@ String? _listenUrlForPlayer(ListeningSession s) {
 
 TextStyle _summaryBulletStyle(BuildContext context, int index) {
   final lead = index <= 1;
+  final art = EpisodeArtworkThemeScope.maybeOf(context);
+  if (art != null) {
+    return TextStyle(
+      fontSize: lead ? 18 : 17,
+      fontWeight: lead ? FontWeight.w500 : FontWeight.w400,
+      color: lead ? Colors.white.withValues(alpha: 0.96) : art.meta,
+      height: 1.7,
+    );
+  }
   final c = SummaryThemeColors.onBody(context);
   return TextStyle(
     fontSize: lead ? 18 : 17,
@@ -444,6 +449,7 @@ class _AdaptiveSummaryTabs extends StatelessWidget {
     required this.accent,
     required this.onSelect,
     required this.audiobookMode,
+    this.episodeChromeTabStyle = false,
   });
 
   final int selectedIndex;
@@ -453,78 +459,121 @@ class _AdaptiveSummaryTabs extends StatelessWidget {
   /// Chapter-based session (Audible / Gutenberg): hide Quotes & More.
   final bool audiobookMode;
 
+  /// Icon row + underline (cinematic dark summary layout).
+  final bool episodeChromeTabStyle;
+
   static const _podcastLabels = ['Points', 'Quotes', 'Chat', 'Tags', 'More'];
   static const _bookLabels = ['Points', 'Chat', 'Tags'];
+  static const _podcastIcons = [
+    Icons.auto_stories_outlined,
+    Icons.format_quote_rounded,
+    Icons.chat_bubble_outline_rounded,
+    Icons.label_outline_rounded,
+    Icons.more_horiz_rounded,
+  ];
+  static const _bookIcons = [
+    Icons.auto_stories_outlined,
+    Icons.chat_bubble_outline_rounded,
+    Icons.label_outline_rounded,
+  ];
 
   @override
   Widget build(BuildContext context) {
     final labels = audiobookMode ? _bookLabels : _podcastLabels;
+    final icons = audiobookMode ? _bookIcons : _podcastIcons;
     final n = labels.length;
-    return Row(
-      children: List.generate(n, (i) {
-        final on = selectedIndex == i;
-        return Expanded(
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: () {
-                // #region agent log
-                _agentLog('H1', 'AdaptiveSummaryTabs:InkWell', 'tab tap', {
-                  'tabIndex': i,
-                  'label': labels[i],
-                });
-                // #endregion
-                higLightTap();
-                onSelect(i);
-              },
-              borderRadius: BorderRadius.circular(12),
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 10, horizontal: 2),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      '${i + 1}',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                        color: on
-                            ? accent
-                            : SummaryThemeColors.onBodySoft(context),
+    final artworkThemeScope = EpisodeArtworkThemeScope.maybeOf(context);
+    final tabAccentColor = episodeChromeTabStyle
+        ? (artworkThemeScope?.accent ?? EpisodeChromeDefaults.fallbackAccent)
+        : accent;
+    final inactive = episodeChromeTabStyle
+        ? (artworkThemeScope?.meta ?? EpisodeChromeDefaults.meta)
+        : SummaryThemeColors.textMuted(context);
+    final activeFg = episodeChromeTabStyle ? Colors.white : accent;
+    return Container(
+      decoration: episodeChromeTabStyle
+          ? BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+              ),
+            )
+          : null,
+      padding: episodeChromeTabStyle
+          ? const EdgeInsets.symmetric(horizontal: 12)
+          : EdgeInsets.zero,
+      child: Row(
+        children: List.generate(n, (i) {
+          final on = selectedIndex == i;
+          return Expanded(
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () {
+                  higLightTap();
+                  onSelect(i);
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 10,
+                    horizontal: 2,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (episodeChromeTabStyle) ...[
+                        Icon(
+                          icons[i],
+                          size: 22,
+                          color: on ? activeFg : inactive,
+                        ),
+                        const SizedBox(height: 4),
+                      ] else ...[
+                        Text(
+                          '${i + 1}',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: on
+                                ? accent
+                                : SummaryThemeColors.onBodySoft(context),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                      ],
+                      Text(
+                        labels[i],
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: episodeChromeTabStyle ? 11 : 9,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.15,
+                          color: on
+                              ? (episodeChromeTabStyle
+                                    ? activeFg
+                                    : accent.withValues(alpha: 0.95))
+                              : inactive,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      labels[i],
-                      textAlign: TextAlign.center,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.15,
-                        color: on
-                            ? accent.withValues(alpha: 0.95)
-                            : SummaryThemeColors.textMuted(context),
+                      const SizedBox(height: 6),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        height: 2,
+                        decoration: BoxDecoration(
+                          color: on ? tabAccentColor : Colors.transparent,
+                          borderRadius: BorderRadius.circular(1),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 6),
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      height: 2,
-                      decoration: BoxDecoration(
-                        color: on ? accent : Colors.transparent,
-                        borderRadius: BorderRadius.circular(1),
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        );
-      }),
+          );
+        }),
+      ),
     );
   }
 }
@@ -544,17 +593,15 @@ class _QuotesTabPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final art = EpisodeArtworkThemeScope.maybeOf(context);
+    final soft = art?.meta ?? SummaryThemeColors.onBodySoft(context);
     if (!unlocked) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 32),
         child: Text(
           'Key quotes appear when the summary finishes.',
           textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 14,
-            height: 1.45,
-            color: SummaryThemeColors.onBodySoft(context),
-          ),
+          style: TextStyle(fontSize: 14, height: 1.45, color: soft),
         ),
       );
     }
@@ -564,21 +611,14 @@ class _QuotesTabPanel extends StatelessWidget {
         child: Text(
           'No key quotes for this summary.',
           textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 14,
-            height: 1.45,
-            color: SummaryThemeColors.onBodySoft(context),
-          ),
+          style: TextStyle(fontSize: 14, height: 1.45, color: soft),
         ),
       );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Key quotes',
-          style: _summarySectionLabelStyle(context),
-        ),
+        Text('Key quotes', style: _summarySectionLabelStyle(context)),
         const SizedBox(height: 14),
         ListView.builder(
           shrinkWrap: true,
@@ -629,7 +669,9 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final accent = Theme.of(context).colorScheme.primary;
+    final accent =
+        EpisodeArtworkThemeScope.maybeOf(context)?.accent ??
+        Theme.of(context).colorScheme.primary;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -660,7 +702,8 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                     final start = AudibleBookService.chapterStartSec(c);
                     final title = c['title'] as String? ?? 'Chapter';
                     final isHere = start == currentStart;
-                    final busy = status == SessionStatus.summarizing ||
+                    final busy =
+                        status == SessionStatus.summarizing ||
                         status == SessionStatus.queued;
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 4),
@@ -683,7 +726,9 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                                         start,
                                         style: style,
                                       );
-                                  ref.invalidate(sessionByIdProvider(sessionId));
+                                  ref.invalidate(
+                                    sessionByIdProvider(sessionId),
+                                  );
                                 },
                           child: Padding(
                             padding: const EdgeInsets.symmetric(
@@ -699,8 +744,7 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                                     borderRadius: BorderRadius.circular(2),
                                     color: isHere
                                         ? accent
-                                        : Colors.white
-                                            .withValues(alpha: 0.08),
+                                        : Colors.white.withValues(alpha: 0.08),
                                   ),
                                 ),
                                 const SizedBox(width: 12),
@@ -764,7 +808,8 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                         ? row.chapterTitle
                         : 'Chapter ${row.chapterNumber}';
                     final isHere = i == gp.selectedChapterIndex;
-                    final busy = status == SessionStatus.summarizing ||
+                    final busy =
+                        status == SessionStatus.summarizing ||
                         status == SessionStatus.queued;
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 4),
@@ -787,7 +832,9 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                                         i,
                                         style: style,
                                       );
-                                  ref.invalidate(sessionByIdProvider(sessionId));
+                                  ref.invalidate(
+                                    sessionByIdProvider(sessionId),
+                                  );
                                 },
                           child: Padding(
                             padding: const EdgeInsets.symmetric(
@@ -803,8 +850,7 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                                     borderRadius: BorderRadius.circular(2),
                                     color: isHere
                                         ? accent
-                                        : Colors.white
-                                            .withValues(alpha: 0.08),
+                                        : Colors.white.withValues(alpha: 0.08),
                                   ),
                                 ),
                                 const SizedBox(width: 12),
@@ -850,8 +896,10 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
             child: Align(
               alignment: Alignment.centerLeft,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.amber.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(20),
@@ -861,10 +909,7 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                 ),
                 child: const Text(
                   'Timestamps may be approximate (plain transcript)',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.white70,
-                  ),
+                  style: TextStyle(fontSize: 11, color: Colors.white70),
                 ),
               ),
             ),
@@ -877,8 +922,10 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
             child: Align(
               alignment: Alignment.centerLeft,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.deepPurple.withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(20),
@@ -888,10 +935,7 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                 ),
                 child: const Text(
                   'Audible: Pick a chapter above; summary uses that catalog title + store blurb — not spoken audio',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.white70,
-                  ),
+                  style: TextStyle(fontSize: 11, color: Colors.white70),
                 ),
               ),
             ),
@@ -906,8 +950,10 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
             child: Align(
               alignment: Alignment.centerLeft,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.teal.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(20),
@@ -917,10 +963,7 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                 ),
                 child: const Text(
                   'Gutenberg: Chapter title is from the book text split — tap another chapter to re-summarize',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.white70,
-                  ),
+                  style: TextStyle(fontSize: 11, color: Colors.white70),
                 ),
               ),
             ),
@@ -930,8 +973,10 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
           runSpacing: 8,
           children: [
             if (PodcastPlayerLinks.looksLikeSpotify(
-                _listenUrlForPlayer(session)))
-              OutlinedButton.icon(
+              _listenUrlForPlayer(session),
+            ))
+              FilledButton.icon(
+                style: _summaryWhitePrimaryButtonStyle(),
                 onPressed: () {
                   unawaited(
                     PodcastPlayerLinks.openSpotifyAt(
@@ -940,76 +985,49 @@ class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
                     ),
                   );
                 },
-                icon: const Icon(Icons.open_in_new,
-                    size: 16, color: Colors.white70),
+                icon: const Icon(Icons.open_in_new, size: 18),
                 label: const Text(
                   'Open in Spotify',
-                  style: TextStyle(color: Colors.white70),
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
                 ),
               ),
             if (PodcastPlayerLinks.looksLikeApplePodcasts(
-                _listenUrlForPlayer(session)))
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: _kApplePodcastsPurple.withValues(alpha: 0.42),
-                      blurRadius: 18,
-                      offset: const Offset(0, 6),
-                    ),
-                  ],
-                ),
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: _kApplePodcastsPurple,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  onPressed: () async {
-                    higLightTap();
-                    final ok = await PodcastPlayerLinks.openApplePodcasts(
-                      _listenUrlForPlayer(session),
-                    );
-                    if (!context.mounted) return;
-                    if (!ok) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Could not open Podcasts. '
-                            'Install the Apple Podcasts app, or open the link in Safari.',
-                          ),
-                          behavior: SnackBarBehavior.floating,
+              _listenUrlForPlayer(session),
+            ))
+              FilledButton.icon(
+                style: _summaryWhitePrimaryButtonStyle(),
+                onPressed: () async {
+                  higLightTap();
+                  final ok = await PodcastPlayerLinks.openApplePodcasts(
+                    _listenUrlForPlayer(session),
+                  );
+                  if (!context.mounted) return;
+                  if (!ok) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Could not open Podcasts. '
+                          'Install the Apple Podcasts app, or open the link in Safari.',
                         ),
-                      );
-                    }
-                  },
-                  icon: const Icon(
-                    Icons.podcasts,
-                    size: 22,
-                    color: Colors.white,
-                  ),
-                  label: const Text(
-                    'Open in Apple Podcasts',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.podcasts, size: 18),
+                label: const Text(
+                  'Open in Apple Podcasts',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
                 ),
               ),
           ],
         ),
         if (!PodcastPlayerLinks.looksLikeSpotify(
-                _listenUrlForPlayer(session)) &&
+              _listenUrlForPlayer(session),
+            ) &&
             !PodcastPlayerLinks.looksLikeApplePodcasts(
-                _listenUrlForPlayer(session)))
+              _listenUrlForPlayer(session),
+            ))
           Padding(
             padding: const EdgeInsets.only(top: 6),
             child: Text(
@@ -1045,6 +1063,8 @@ class _SummaryMoreTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final art = EpisodeArtworkThemeScope.maybeOf(context);
+    final secondary = art?.meta ?? SummaryThemeColors.textMuted(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1055,10 +1075,9 @@ class _SummaryMoreTab extends ConsumerWidget {
             child: TextButton.icon(
               onPressed: () async {
                 higLightTap();
-                await ref.read(sessionActionsProvider).rememberSummaryStyleForShow(
-                      session.artist,
-                      style!,
-                    );
+                await ref
+                    .read(sessionActionsProvider)
+                    .rememberSummaryStyleForShow(session.artist, style!);
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
@@ -1070,15 +1089,18 @@ class _SummaryMoreTab extends ConsumerWidget {
                   );
                 }
               },
-              icon: const Icon(
+              style: art != null
+                  ? TextButton.styleFrom(foregroundColor: art.accent)
+                  : null,
+              icon: Icon(
                 Icons.bookmark_added_outlined,
                 size: 18,
-                color: Colors.white70,
+                color: art?.accent ?? Colors.white70,
               ),
               label: Text(
                 'Always use ${style!.label} for this show',
-                style: const TextStyle(
-                  color: Colors.white70,
+                style: TextStyle(
+                  color: art?.accent ?? Colors.white70,
                   fontSize: 13,
                 ),
               ),
@@ -1092,11 +1114,7 @@ class _SummaryMoreTab extends ConsumerWidget {
             Expanded(
               child: Text(
                 '$wc words · ~$readMin min read',
-                style: TextStyle(
-                  fontSize: 12,
-                  height: 1.4,
-                  color: SummaryThemeColors.textMuted(context),
-                ),
+                style: TextStyle(fontSize: 12, height: 1.4, color: secondary),
               ),
             ),
             SummaryListenControl(
@@ -1130,6 +1148,9 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
   late final ValueNotifier<bool> _mainBottomFadeVisible;
   int _lastBottomFadeEvalMs = 0;
   late final ScrollController _summaryMainScroll;
+  EpisodeArtworkTheme _episodeArtworkTheme = EpisodeArtworkTheme.fallback;
+  String? _episodeArtworkPaletteUrl;
+  int _episodePaletteLoadGeneration = 0;
 
   @override
   void initState() {
@@ -1172,25 +1193,12 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
     if (!m.hasContentDimensions) return;
     if (m.maxScrollExtent <= m.viewportDimension * 0.06) {
       if (_mainBottomFadeVisible.value) {
-        // #region agent log
-        _agentLog('H3', 'SummaryScreen:MainScroll', 'bottomFade off', {
-          'pixels': m.pixels,
-          'maxScrollExtent': m.maxScrollExtent,
-        });
-        // #endregion
         _mainBottomFadeVisible.value = false;
       }
     } else {
       final atBottom = m.pixels >= m.maxScrollExtent - 40;
       final show = !atBottom;
       if (show != _mainBottomFadeVisible.value) {
-        // #region agent log
-        _agentLog('H3', 'SummaryScreen:MainScroll', 'bottomFade toggled', {
-          'show': show,
-          'pixels': m.pixels,
-          'maxScrollExtent': m.maxScrollExtent,
-        });
-        // #endregion
         _mainBottomFadeVisible.value = show;
       }
     }
@@ -1220,8 +1228,7 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
   }
 
   void _syncLiquidProgressForStatus(SessionStatus st) {
-    final want =
-        st == SessionStatus.queued || st == SessionStatus.summarizing;
+    final want = st == SessionStatus.queued || st == SessionStatus.summarizing;
     if (want) {
       if (!_liquidProgress.isAnimating) _liquidProgress.repeat();
     } else {
@@ -1236,12 +1243,22 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
       _summaryMainTab = 0;
       _quotesUnlocked = false;
       _mainBottomFadeVisible.value = true;
+      _episodeArtworkTheme = EpisodeArtworkTheme.fallback;
+      _episodeArtworkPaletteUrl = null;
+      _episodePaletteLoadGeneration++;
       _stopLiquidProgress();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_summaryMainScroll.hasClients) return;
         _summaryMainScroll.jumpTo(0);
       });
     }
+  }
+
+  Future<void> _loadEpisodeArtworkTheme(String artUrl) async {
+    final gen = ++_episodePaletteLoadGeneration;
+    final theme = await EpisodeArtworkTheme.fromArtworkUrl(artUrl);
+    if (!mounted || gen != _episodePaletteLoadGeneration) return;
+    setState(() => _episodeArtworkTheme = theme);
   }
 
   @override
@@ -1277,7 +1294,10 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
     context.pop();
   }
 
-  Future<void> _sharePlainText(ListeningSession session, List<String> bullets) async {
+  Future<void> _sharePlainText(
+    ListeningSession session,
+    List<String> bullets,
+  ) async {
     higLightTap();
     final plain = _bulletsPlainForShare(bullets);
     final text = StringBuffer()
@@ -1320,7 +1340,10 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
     }
   }
 
-  Future<void> _shareAsImage(ListeningSession session, List<String> bullets) async {
+  Future<void> _shareAsImage(
+    ListeningSession session,
+    List<String> bullets,
+  ) async {
     higLightTap();
     if (!mounted) return;
     final plain = _bulletsPlainForShare(bullets);
@@ -1350,18 +1373,16 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
       if (!mounted) return;
       // Overlay entry context; not the State's [context].
       // ignore: use_build_context_synchronously
-      final boundary = key.currentContext?.findRenderObject()
-          as RenderRepaintBoundary?;
+      final boundary =
+          key.currentContext?.findRenderObject() as RenderRepaintBoundary?;
       if (boundary == null) return;
       final image = await boundary.toImage(pixelRatio: 3);
       if (!mounted) return;
-      final bytes =
-          await image.toByteData(format: ui.ImageByteFormat.png);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
       if (bytes == null || !mounted) return;
       final dir = await getTemporaryDirectory();
       if (!mounted) return;
-      final file =
-          File('${dir.path}/moment-${session.id.substring(0, 8)}.png');
+      final file = File('${dir.path}/moment-${session.id.substring(0, 8)}.png');
       await file.writeAsBytes(bytes.buffer.asUint8List());
       if (!mounted) return;
       await Share.shareXFiles([XFile(file.path)], subject: session.title);
@@ -1386,17 +1407,9 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
       if (!mounted || already) return;
       await MomentsStatsService.markFirstSummaryDone();
       if (!mounted) return;
-      // #region agent log
-      _agentLog('H4', '_maybeCelebrateFirstSummary', 'play confetti + overlay',
-          {'mounted': mounted});
-      // #endregion
       _confetti.play();
       _showFirstSummaryCelebration();
       Future.delayed(const Duration(seconds: 4), () {
-        // #region agent log
-        _agentLog('H4', '_maybeCelebrateFirstSummary:timer', 'overlay remove',
-            {'hasEntry': _firstSummaryOverlay != null});
-        // #endregion
         _firstSummaryOverlay?.remove();
         _firstSummaryOverlay = null;
       });
@@ -1413,10 +1426,7 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
           child: TweenAnimationBuilder<double>(
             tween: Tween(begin: 0, end: 1),
             duration: const Duration(milliseconds: 400),
-            builder: (context, t, child) => Opacity(
-              opacity: t,
-              child: child,
-            ),
+            builder: (context, t, child) => Opacity(opacity: t, child: child),
             child: Container(
               margin: const EdgeInsets.all(Tokens.spaceLg),
               padding: const EdgeInsets.all(Tokens.spaceLg),
@@ -1428,12 +1438,14 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('🎉 Your first summary!',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                      )),
+                  const Text(
+                    '🎉 Your first summary!',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                   const SizedBox(height: Tokens.spaceSm),
                   Text(
                     'Share it with someone',
@@ -1447,10 +1459,6 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                       Expanded(
                         child: FilledButton(
                           onPressed: () {
-                            // #region agent log
-                            _agentLog('H4', 'firstSummaryOverlay', 'dismiss tap',
-                                {});
-                            // #endregion
                             _firstSummaryOverlay?.remove();
                             _firstSummaryOverlay = null;
                           },
@@ -1467,9 +1475,6 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
       ),
     );
     overlay.insert(_firstSummaryOverlay!);
-    // #region agent log
-    _agentLog('H4', '_showFirstSummaryCelebration', 'overlay inserted', {});
-    // #endregion
   }
 
   @override
@@ -1524,13 +1529,6 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
             : cs.surfaceContainerHighest;
         final appBarIconFg = isDark ? Colors.white : cs.onSurface;
 
-        // #region agent log
-        _agentLog('H-light', 'summary_screen:session', 'summary chrome', {
-          'brightness': Theme.of(context).brightness.name,
-          'bgPrimary': SummaryThemeColors.bgPrimary(context).toARGB32(),
-        });
-        // #endregion
-
         final status = SessionStatus.fromJson(session.status);
         _syncLiquidProgressForStatus(status);
         final style = SummaryStyle.fromJson(session.summaryStyle);
@@ -1555,62 +1553,54 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
             : (_summaryMainTab > 4 ? 0 : _summaryMainTab);
 
         final combined = bullets.join(' ');
-        final wc = combined.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+        final wc = combined
+            .split(RegExp(r'\s+'))
+            .where((w) => w.isNotEmpty)
+            .length;
         final readMin = (wc / 200).ceil().clamp(1, 999);
+
+        final useEpisodeChromeLayout =
+            isDark && status == SessionStatus.done && bullets.isNotEmpty;
+        if (useEpisodeChromeLayout) {
+          final artUrl = session.artworkUrl?.trim() ?? '';
+          if (_episodeArtworkPaletteUrl != artUrl) {
+            _episodeArtworkPaletteUrl = artUrl;
+            unawaited(_loadEpisodeArtworkTheme(artUrl));
+          }
+        }
+        final pageBg = useEpisodeChromeLayout
+            ? _episodeArtworkTheme.pageBg
+            : SummaryThemeColors.bgPrimary(context);
+        final chatTabIndex = chapterBased ? 1 : 2;
 
         return AnnotatedRegion<SystemUiOverlayStyle>(
           value: isDark
               ? SystemUiOverlayStyle.light
               : SystemUiOverlayStyle.dark,
           child: Scaffold(
-            backgroundColor: SummaryThemeColors.bgPrimary(context),
+            backgroundColor: pageBg,
             body: Stack(
               children: [
-                CustomScrollView(
-                  controller: _summaryMainScroll,
-                  physics: const BouncingScrollPhysics(
-                    parent: AlwaysScrollableScrollPhysics(),
-                  ),
-                  slivers: [
-                    SliverAppBar(
-                      pinned: false,
-                      floating: true,
-                      backgroundColor: Colors.transparent,
-                      surfaceTintColor: Colors.transparent,
-                      scrolledUnderElevation: 0,
-                      elevation: 0,
-                      expandedHeight: 0,
-                      automaticallyImplyLeading: false,
-                      leading: IconButton(
-                        padding: EdgeInsets.zero,
-                        onPressed: () => context.pop(),
-                        icon: Container(
-                          width: 32,
-                          height: 32,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: appBarChipBg,
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            Icons.arrow_back_ios_new,
-                            size: 16,
-                            color: appBarIconFg,
-                          ),
-                        ),
-                      ),
-                      title: Text(
-                        'Summary',
-                        style: GoogleFonts.syne(
-                          color: appBarIconFg,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      actions: [
-                        if (status == SessionStatus.done &&
-                            bullets.isNotEmpty)
-                          PopupMenuButton<String>(
+                () {
+                  final scroll = CustomScrollView(
+                    controller: _summaryMainScroll,
+                    physics: const BouncingScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
+                    ),
+                    slivers: [
+                      if (!useEpisodeChromeLayout)
+                        SliverAppBar(
+                          pinned: false,
+                          floating: true,
+                          backgroundColor: Colors.transparent,
+                          surfaceTintColor: Colors.transparent,
+                          scrolledUnderElevation: 0,
+                          elevation: 0,
+                          expandedHeight: 0,
+                          automaticallyImplyLeading: false,
+                          leading: IconButton(
                             padding: EdgeInsets.zero,
+                            onPressed: () => context.pop(),
                             icon: Container(
                               width: 32,
                               height: 32,
@@ -1620,449 +1610,670 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                                 shape: BoxShape.circle,
                               ),
                               child: Icon(
-                                Icons.ios_share,
+                                Icons.arrow_back_ios_new,
                                 size: 16,
                                 color: appBarIconFg,
                               ),
                             ),
-                            onSelected: (v) {
-                              switch (v) {
-                                case 'text':
-                                  unawaited(_sharePlainText(session, bullets));
-                                  break;
-                                case 'md':
-                                  unawaited(_shareMarkdownFile(
-                                      session, bullets, quotes));
-                                  break;
-                                case 'copy':
-                                  unawaited(
-                                      _copyMarkdown(session, bullets, quotes));
-                                  break;
-                                case 'img':
-                                  unawaited(_shareAsImage(session, bullets));
-                                  break;
-                              }
-                            },
-                            itemBuilder: (context) => const [
-                              PopupMenuItem(
-                                value: 'text',
-                                child: Text('Share as text'),
-                              ),
-                              PopupMenuItem(
-                                value: 'md',
-                                child: Text('Share Markdown file'),
-                              ),
-                              PopupMenuItem(
-                                value: 'copy',
-                                child: Text('Copy Markdown'),
-                              ),
-                              PopupMenuItem(
-                                value: 'img',
-                                child: Text('Share image card'),
-                              ),
-                            ],
                           ),
-                        IconButton(
-                          padding: EdgeInsets.zero,
-                          onPressed: () => _deleteMoment(context, session),
-                          icon: Container(
-                            width: 32,
-                            height: 32,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: appBarChipBg,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              Icons.delete_outline,
-                              size: 16,
+                          title: Text(
+                            'Summary',
+                            style: GoogleFonts.syne(
                               color: appBarIconFg,
+                              fontWeight: FontWeight.w600,
                             ),
+                          ),
+                          actions: [
+                            if (status == SessionStatus.done &&
+                                bullets.isNotEmpty)
+                              PopupMenuButton<String>(
+                                padding: EdgeInsets.zero,
+                                icon: Container(
+                                  width: 32,
+                                  height: 32,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: appBarChipBg,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    Icons.ios_share,
+                                    size: 16,
+                                    color: appBarIconFg,
+                                  ),
+                                ),
+                                onSelected: (v) {
+                                  switch (v) {
+                                    case 'text':
+                                      unawaited(
+                                        _sharePlainText(session, bullets),
+                                      );
+                                      break;
+                                    case 'md':
+                                      unawaited(
+                                        _shareMarkdownFile(
+                                          session,
+                                          bullets,
+                                          quotes,
+                                        ),
+                                      );
+                                      break;
+                                    case 'copy':
+                                      unawaited(
+                                        _copyMarkdown(session, bullets, quotes),
+                                      );
+                                      break;
+                                    case 'img':
+                                      unawaited(
+                                        _shareAsImage(session, bullets),
+                                      );
+                                      break;
+                                  }
+                                },
+                                itemBuilder: (context) => const [
+                                  PopupMenuItem(
+                                    value: 'text',
+                                    child: Text('Share as text'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'md',
+                                    child: Text('Share Markdown file'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'copy',
+                                    child: Text('Copy Markdown'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'img',
+                                    child: Text('Share image card'),
+                                  ),
+                                ],
+                              ),
+                            IconButton(
+                              padding: EdgeInsets.zero,
+                              onPressed: () => _deleteMoment(context, session),
+                              icon: Container(
+                                width: 32,
+                                height: 32,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: appBarChipBg,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  Icons.delete_outline,
+                                  size: 16,
+                                  color: appBarIconFg,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                        ),
+                      SliverToBoxAdapter(
+                        child: _CinematicHero(
+                          session: session,
+                          bottomBlendColor: useEpisodeChromeLayout
+                              ? _episodeArtworkTheme.pageBg
+                              : null,
+                          externalHeroWash: useEpisodeChromeLayout
+                              ? _episodeArtworkTheme.heroWash
+                              : null,
+                          topOverlay: useEpisodeChromeLayout
+                              ? EpisodeHeroActionBar(
+                                  onClose: () => context.pop(),
+                                  trailing: [
+                                    if (status == SessionStatus.done &&
+                                        bullets.isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          right: 8,
+                                        ),
+                                        child: PopupMenuButton<String>(
+                                          offset: const Offset(0, 48),
+                                          padding: EdgeInsets.zero,
+                                          child: Container(
+                                            width: 40,
+                                            height: 40,
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              color: Colors.black.withValues(
+                                                alpha: 0.38,
+                                              ),
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: Icon(
+                                              Icons.ios_share,
+                                              size: 20,
+                                              color: Colors.white.withValues(
+                                                alpha: 0.95,
+                                              ),
+                                            ),
+                                          ),
+                                          onSelected: (v) {
+                                            switch (v) {
+                                              case 'text':
+                                                unawaited(
+                                                  _sharePlainText(
+                                                    session,
+                                                    bullets,
+                                                  ),
+                                                );
+                                                break;
+                                              case 'md':
+                                                unawaited(
+                                                  _shareMarkdownFile(
+                                                    session,
+                                                    bullets,
+                                                    quotes,
+                                                  ),
+                                                );
+                                                break;
+                                              case 'copy':
+                                                unawaited(
+                                                  _copyMarkdown(
+                                                    session,
+                                                    bullets,
+                                                    quotes,
+                                                  ),
+                                                );
+                                                break;
+                                              case 'img':
+                                                unawaited(
+                                                  _shareAsImage(
+                                                    session,
+                                                    bullets,
+                                                  ),
+                                                );
+                                                break;
+                                            }
+                                          },
+                                          itemBuilder: (context) => const [
+                                            PopupMenuItem(
+                                              value: 'text',
+                                              child: Text('Share as text'),
+                                            ),
+                                            PopupMenuItem(
+                                              value: 'md',
+                                              child: Text(
+                                                'Share Markdown file',
+                                              ),
+                                            ),
+                                            PopupMenuItem(
+                                              value: 'copy',
+                                              child: Text('Copy Markdown'),
+                                            ),
+                                            PopupMenuItem(
+                                              value: 'img',
+                                              child: Text('Share image card'),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    EpisodeHeroIconButton(
+                                      icon: Icons.delete_outline_rounded,
+                                      onPressed: () =>
+                                          _deleteMoment(context, session),
+                                    ),
+                                  ],
+                                )
+                              : null,
+                        ),
+                      ),
+                      if (useEpisodeChromeLayout)
+                        SliverToBoxAdapter(
+                          child: SummaryEpisodeInfoHeader(
+                            theme: _episodeArtworkTheme,
+                            title: session.title,
+                            showName: session.artist,
+                            artworkUrl: session.artworkUrl,
+                            createdAt: session.createdAt,
+                            momentCount: bullets.length,
+                            durationLabel: _summaryShortDuration(session),
+                            trustLine: _summaryTrustLine(session),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                      ],
-                    ),
-                    SliverToBoxAdapter(
-                      child: _CinematicHero(session: session),
-                    ),
-                    SliverToBoxAdapter(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          if (status == SessionStatus.queued ||
-                              status == SessionStatus.summarizing)
-                            Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: AnimatedBuilder(
-                                animation: _liquidProgress,
-                                builder: (context, _) {
-                                  return Column(
-                                    children: [
-                                      Center(
-                                        child: LiquidLoader(
-                                          progress: _liquidProgress.value,
-                                          artworkUrl: session.artworkUrl,
-                                          labelForInitials: session.artist,
-                                          accentColor: Theme.of(context)
-                                              .colorScheme
-                                              .primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: Tokens.spaceLg),
-                                      Container(
-                                        padding: const EdgeInsets.all(16),
-                                        decoration: BoxDecoration(
-                                          color: isDark
-                                              ? Colors.white
-                                                  .withValues(alpha: 0.05)
-                                              : cs.surfaceContainerHighest
-                                                  .withValues(alpha: 0.65),
-                                          borderRadius: BorderRadius.circular(
-                                            Tokens.radiusMd,
+                      SliverToBoxAdapter(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (status == SessionStatus.queued ||
+                                status == SessionStatus.summarizing)
+                              Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: AnimatedBuilder(
+                                  animation: _liquidProgress,
+                                  builder: (context, _) {
+                                    return Column(
+                                      children: [
+                                        Center(
+                                          child: LiquidLoader(
+                                            progress: _liquidProgress.value,
+                                            artworkUrl: session.artworkUrl,
+                                            labelForInitials: session.artist,
+                                            accentColor: Theme.of(
+                                              context,
+                                            ).colorScheme.primary,
                                           ),
-                                          border: Border.all(
+                                        ),
+                                        const SizedBox(height: Tokens.spaceLg),
+                                        Container(
+                                          padding: const EdgeInsets.all(16),
+                                          decoration: BoxDecoration(
                                             color: isDark
                                                 ? Colors.white.withValues(
-                                                    alpha: 0.1,
+                                                    alpha: 0.05,
                                                   )
-                                                : cs.outlineVariant,
+                                                : cs.surfaceContainerHighest
+                                                      .withValues(alpha: 0.65),
+                                            borderRadius: BorderRadius.circular(
+                                              Tokens.radiusMd,
+                                            ),
+                                            border: Border.all(
+                                              color: isDark
+                                                  ? Colors.white.withValues(
+                                                      alpha: 0.1,
+                                                    )
+                                                  : cs.outlineVariant,
+                                            ),
                                           ),
+                                          child: _StatusCard(status: status),
                                         ),
-                                        child: _StatusCard(status: status),
-                                      ),
-                                    ],
-                                  );
-                                },
+                                      ],
+                                    );
+                                  },
+                                ),
                               ),
-                            ),
-                          if (status == SessionStatus.error)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
+                            if (status == SessionStatus.error)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
+                                child: _ErrorCard(
+                                  message:
+                                      session.errorMessage ??
+                                      'Something went wrong — tap to retry',
+                                  onRetry: () {
+                                    ref
+                                        .read(sessionActionsProvider)
+                                        .retrySummary(
+                                          widget.sessionId,
+                                          style: style,
+                                        );
+                                    ref.invalidate(
+                                      sessionByIdProvider(widget.sessionId),
+                                    );
+                                  },
+                                ),
                               ),
-                              child: _ErrorCard(
-                                message: session.errorMessage ??
-                                    'Something went wrong — tap to retry',
-                                onRetry: () {
-                                  ref
-                                      .read(sessionActionsProvider)
-                                      .retrySummary(
-                                        widget.sessionId,
-                                        style: style,
-                                      );
-                                  ref.invalidate(
-                                    sessionByIdProvider(widget.sessionId),
-                                  );
-                                },
-                              ),
-                            ),
-                          if (status == SessionStatus.done &&
-                              bullets.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                22,
-                                28,
-                                22,
-                                0,
-                              ),
-                              child: Center(
-                                child: ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxWidth: _kSummaryContentMaxWidth,
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.stretch,
-                                    children: [
-                                      Text(
-                                        'Summary',
-                                        style: _summarySectionLabelStyle(
-                                          context,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 10),
-                                      Text(
-                                        _summaryTrustLine(session),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          height: 1.55,
-                                          color: SummaryThemeColors.onBodySoft(
-                                            context,
+                            if (status == SessionStatus.done &&
+                                bullets.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  22,
+                                  28,
+                                  22,
+                                  0,
+                                ),
+                                child: Center(
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      maxWidth: _kSummaryContentMaxWidth,
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        if (!useEpisodeChromeLayout) ...[
+                                          Text(
+                                            'Summary',
+                                            style: _summarySectionLabelStyle(
+                                              context,
+                                            ),
                                           ),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 22),
-                                      _SummaryChaptersAndPlayerLinks(
-                                        session: session,
-                                        status: status,
-                                        style: style,
-                                        sessionId: widget.sessionId,
-                                      ),
-                                      const SizedBox(height: 18),
-                                      _AdaptiveSummaryTabs(
-                                        audiobookMode: chapterBased,
-                                        selectedIndex: summaryTabIndex,
-                                        accent: Theme.of(context)
-                                            .colorScheme
-                                            .primary,
-                                        onSelect: (i) {
-                                          // #region agent log
-                                          _agentLog(
-                                              'H2',
-                                              'SummaryScreen:onSelect',
-                                              'set main tab', {
-                                            'newIndex': i,
-                                            'prevStoredTab': _summaryMainTab,
-                                            'firstOverlayActive':
-                                                _firstSummaryOverlay != null,
-                                          });
-                                          // #endregion
-                                          setState(() => _summaryMainTab = i);
-                                        },
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Builder(
-                                        builder: (context) {
-                                          final t = summaryTabIndex;
-                                          final showPoints = t == 0;
-                                          final showQuotes =
-                                              !chapterBased && t == 1;
-                                          final showChat = chapterBased
-                                              ? t == 1
-                                              : t == 2;
-                                          final showTags = chapterBased
-                                              ? t == 2
-                                              : t == 3;
-                                          final showMore =
-                                              !chapterBased && t == 4;
-                                          return Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.stretch,
-                                            children: [
-                                              if (showPoints) ...[
-                                                Align(
-                                                  alignment:
-                                                      Alignment.centerLeft,
-                                                  child: SummaryListenControl(
-                                                    plainText:
-                                                        _summaryPlainTextForListen(
-                                                      bullets,
-                                                      quotes,
-                                                    ),
+                                          const SizedBox(height: 10),
+                                          Text(
+                                            _summaryTrustLine(session),
+                                            style: TextStyle(
+                                              fontSize: 13,
+                                              height: 1.55,
+                                              color:
+                                                  SummaryThemeColors.onBodySoft(
+                                                    context,
                                                   ),
-                                                ),
-                                                const SizedBox(height: 12),
-                                                _TypingOrInstantBullets(
-                                                  sessionId: session.id,
-                                                  listenSession: session,
-                                                  bullets: bullets,
-                                                  accent: Theme.of(context)
-                                                      .colorScheme
-                                                      .primary,
-                                                  useStructuredBookCards:
-                                                      chapterBased,
-                                                  useVerticalStack: true,
-                                                  onAllBulletsComplete: () {
-                                                    if (mounted) {
-                                                      setState(() =>
-                                                          _quotesUnlocked =
-                                                              true);
-                                                    }
-                                                  },
-                                                ),
-                                              ],
-                                              if (showQuotes)
-                                                _QuotesTabPanel(
-                                                  quotes: quotes,
-                                                  unlocked: _quotesUnlocked,
-                                                  session: session,
-                                                  accent: Theme.of(context)
-                                                      .colorScheme
-                                                      .primary,
-                                                ),
-                                              if (showChat)
-                                                ContentChat(
-                                                  key: ValueKey(
-                                                      '${session.id}-tab-chat'),
-                                                  systemPrompt:
-                                                      isBookContentChat
-                                                          ? buildBookContentChatSystemPrompt(
-                                                              bookTitle:
-                                                                  session
-                                                                      .title,
-                                                              authorName:
-                                                                  session
-                                                                      .artist,
-                                                              allChapterSummaries:
-                                                                  contentChatContext,
-                                                            )
-                                                          : buildPodcastContentChatSystemPrompt(
-                                                              podcastTitle:
-                                                                  session
-                                                                      .title,
-                                                              podcastTranscriptOrSummary:
-                                                                  contentChatContext,
-                                                            ),
-                                                  title: session.title,
-                                                  starterChips:
-                                                      isBookContentChat
-                                                          ? kBookContentChatStarterChips
-                                                          : kPodcastContentChatStarterChips,
-                                                  embedInTab: true,
-                                                ),
-                                              if (showTags)
-                                                _TagsRow(session: session),
-                                              if (showMore)
-                                                _SummaryMoreTab(
-                                                  session: session,
-                                                  style: style,
-                                                  bullets: bullets,
-                                                  quotes: quotes,
-                                                  wc: wc,
-                                                  readMin: readMin,
-                                                ),
-                                              if (chapterBased) ...[
-                                                const SizedBox(height: 24),
-                                                if (style != null) ...[
+                                            ),
+                                          ),
+                                          const SizedBox(height: 22),
+                                        ],
+                                        _SummaryChaptersAndPlayerLinks(
+                                          session: session,
+                                          status: status,
+                                          style: style,
+                                          sessionId: widget.sessionId,
+                                        ),
+                                        const SizedBox(height: 18),
+                                        if (useEpisodeChromeLayout) ...[
+                                          SummaryAskAiBar(
+                                            theme: _episodeArtworkTheme,
+                                            onTap: () {
+                                              setState(
+                                                () => _summaryMainTab =
+                                                    chatTabIndex,
+                                              );
+                                            },
+                                          ),
+                                          const SizedBox(height: 12),
+                                        ],
+                                        _AdaptiveSummaryTabs(
+                                          audiobookMode: chapterBased,
+                                          selectedIndex: summaryTabIndex,
+                                          accent:
+                                              EpisodeArtworkThemeScope.maybeOf(
+                                                context,
+                                              )?.accent ??
+                                              Theme.of(
+                                                context,
+                                              ).colorScheme.primary,
+                                          episodeChromeTabStyle:
+                                              useEpisodeChromeLayout,
+                                          onSelect: (i) {
+                                            setState(() => _summaryMainTab = i);
+                                          },
+                                        ),
+                                        const SizedBox(height: 16),
+                                        Builder(
+                                          builder: (context) {
+                                            final episodeArt =
+                                                EpisodeArtworkThemeScope.maybeOf(
+                                                  context,
+                                                );
+                                            final t = summaryTabIndex;
+                                            final showPoints = t == 0;
+                                            final showQuotes =
+                                                !chapterBased && t == 1;
+                                            final showChat = chapterBased
+                                                ? t == 1
+                                                : t == 2;
+                                            final showTags = chapterBased
+                                                ? t == 2
+                                                : t == 3;
+                                            final showMore =
+                                                !chapterBased && t == 4;
+                                            return Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.stretch,
+                                              children: [
+                                                if (showPoints) ...[
                                                   Align(
                                                     alignment:
                                                         Alignment.centerLeft,
-                                                    child: TextButton.icon(
-                                                      onPressed: () async {
-                                                        higLightTap();
-                                                        await ref
-                                                            .read(
-                                                              sessionActionsProvider,
-                                                            )
-                                                            .rememberSummaryStyleForShow(
-                                                              session.artist,
-                                                              style!,
-                                                            );
-                                                        if (context.mounted) {
-                                                          ScaffoldMessenger.of(
-                                                                  context)
-                                                              .showSnackBar(
-                                                            SnackBar(
-                                                              content: Text(
-                                                                'Future saves from “${session.artist}” will use ${style!.label}.',
-                                                              ),
-                                                              behavior:
-                                                                  SnackBarBehavior
-                                                                      .floating,
-                                                            ),
-                                                          );
-                                                        }
-                                                      },
-                                                      icon: const Icon(
-                                                        Icons
-                                                            .bookmark_added_outlined,
-                                                        size: 18,
-                                                        color: Colors.white70,
-                                                      ),
-                                                      label: Text(
-                                                        'Always use ${style!.label} for this show',
-                                                        style: const TextStyle(
-                                                          color: Colors.white70,
-                                                          fontSize: 13,
-                                                        ),
-                                                      ),
+                                                    child: SummaryListenControl(
+                                                      plainText:
+                                                          _summaryPlainTextForListen(
+                                                            bullets,
+                                                            quotes,
+                                                          ),
+                                                      filledPrimaryListenButton:
+                                                          useEpisodeChromeLayout,
                                                     ),
                                                   ),
+                                                  const SizedBox(height: 12),
+                                                  _TypingOrInstantBullets(
+                                                    sessionId: session.id,
+                                                    listenSession: session,
+                                                    bullets: bullets,
+                                                    accent:
+                                                        episodeArt?.accent ??
+                                                        Theme.of(
+                                                          context,
+                                                        ).colorScheme.primary,
+                                                    useStructuredBookCards:
+                                                        chapterBased,
+                                                    useVerticalStack: true,
+                                                    insightCardsUseArtworkTheme:
+                                                        useEpisodeChromeLayout,
+                                                    onAllBulletsComplete: () {
+                                                      if (mounted) {
+                                                        setState(
+                                                          () =>
+                                                              _quotesUnlocked =
+                                                                  true,
+                                                        );
+                                                      }
+                                                    },
+                                                  ),
                                                 ],
-                                                Row(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment
-                                                          .center,
-                                                  children: [
-                                                    Expanded(
-                                                      child: Text(
-                                                        '$wc words · ~$readMin min read',
-                                                        style: TextStyle(
-                                                          fontSize: 12,
-                                                          height: 1.4,
-                                                          color: Tokens
-                                                              .textMuted,
+                                                if (showQuotes)
+                                                  _QuotesTabPanel(
+                                                    quotes: quotes,
+                                                    unlocked: _quotesUnlocked,
+                                                    session: session,
+                                                    accent:
+                                                        episodeArt?.accent ??
+                                                        Theme.of(
+                                                          context,
+                                                        ).colorScheme.primary,
+                                                  ),
+                                                Visibility(
+                                                  visible: showChat,
+                                                  maintainState: true,
+                                                  maintainAnimation: true,
+                                                  maintainSize: false,
+                                                  child: ContentChat(
+                                                    key: ValueKey(
+                                                      '${session.id}-tab-chat',
+                                                    ),
+                                                    systemPrompt:
+                                                        isBookContentChat
+                                                        ? buildBookContentChatSystemPrompt(
+                                                            bookTitle:
+                                                                session.title,
+                                                            authorName:
+                                                                session.artist,
+                                                            allChapterSummaries:
+                                                                contentChatContext,
+                                                          )
+                                                        : buildPodcastContentChatSystemPrompt(
+                                                            podcastTitle:
+                                                                session.title,
+                                                            podcastTranscriptOrSummary:
+                                                                contentChatContext,
+                                                          ),
+                                                    title: session.title,
+                                                    starterChips:
+                                                        isBookContentChat
+                                                        ? kBookContentChatStarterChips
+                                                        : kPodcastContentChatStarterChips,
+                                                    embedInTab: true,
+                                                  ),
+                                                ),
+                                                if (showTags)
+                                                  _TagsRow(session: session),
+                                                if (showMore)
+                                                  _SummaryMoreTab(
+                                                    session: session,
+                                                    style: style,
+                                                    bullets: bullets,
+                                                    quotes: quotes,
+                                                    wc: wc,
+                                                    readMin: readMin,
+                                                  ),
+                                                if (chapterBased) ...[
+                                                  const SizedBox(height: 24),
+                                                  if (style != null) ...[
+                                                    Align(
+                                                      alignment:
+                                                          Alignment.centerLeft,
+                                                      child: TextButton.icon(
+                                                        onPressed: () async {
+                                                          higLightTap();
+                                                          await ref
+                                                              .read(
+                                                                sessionActionsProvider,
+                                                              )
+                                                              .rememberSummaryStyleForShow(
+                                                                session.artist,
+                                                                style!,
+                                                              );
+                                                          if (context.mounted) {
+                                                            ScaffoldMessenger.of(
+                                                              context,
+                                                            ).showSnackBar(
+                                                              SnackBar(
+                                                                content: Text(
+                                                                  'Future saves from “${session.artist}” will use ${style!.label}.',
+                                                                ),
+                                                                behavior:
+                                                                    SnackBarBehavior
+                                                                        .floating,
+                                                              ),
+                                                            );
+                                                          }
+                                                        },
+                                                        style:
+                                                            episodeArt != null
+                                                            ? TextButton.styleFrom(
+                                                                foregroundColor:
+                                                                    episodeArt
+                                                                        .accent,
+                                                              )
+                                                            : null,
+                                                        icon: Icon(
+                                                          Icons
+                                                              .bookmark_added_outlined,
+                                                          size: 18,
+                                                          color:
+                                                              episodeArt
+                                                                  ?.accent ??
+                                                              Colors.white70,
+                                                        ),
+                                                        label: Text(
+                                                          'Always use ${style!.label} for this show',
+                                                          style: TextStyle(
+                                                            color:
+                                                                episodeArt
+                                                                    ?.accent ??
+                                                                Colors.white70,
+                                                            fontSize: 13,
+                                                          ),
                                                         ),
                                                       ),
                                                     ),
-                                                    if (!showPoints)
-                                                      SummaryListenControl(
-                                                        plainText:
-                                                            _summaryPlainTextForListen(
-                                                          bullets,
-                                                          quotes,
+                                                  ],
+                                                  Row(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .center,
+                                                    children: [
+                                                      Expanded(
+                                                        child: Text(
+                                                          '$wc words · ~$readMin min read',
+                                                          style: TextStyle(
+                                                            fontSize: 12,
+                                                            height: 1.4,
+                                                            color:
+                                                                episodeArt
+                                                                    ?.meta ??
+                                                                Tokens
+                                                                    .textMuted,
+                                                          ),
                                                         ),
                                                       ),
-                                                  ],
-                                                ),
+                                                      if (!showPoints)
+                                                        SummaryListenControl(
+                                                          plainText:
+                                                              _summaryPlainTextForListen(
+                                                                bullets,
+                                                                quotes,
+                                                              ),
+                                                        ),
+                                                    ],
+                                                  ),
+                                                ],
                                               ],
-                                            ],
-                                          );
-                                        },
-                                      ),
-                                ],
-                              ),
-                                ),
-                              ),
-                            ),
-                          if (status == SessionStatus.done &&
-                              bullets.isEmpty)
-                            Padding(
-                              padding:
-                                  const EdgeInsets.fromLTRB(16, 24, 16, 0),
-                              child: Text(
-                                'No summary content available.',
-                                style: TextStyle(
-                                  color: SummaryThemeColors.onBodySoft(
-                                    context,
+                                            );
+                                          },
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          if (!SessionDisplayKind.isChapterBased(session)) ...[
-                            Padding(
-                              padding:
-                                  const EdgeInsets.fromLTRB(22, 32, 22, 10),
-                              child: Center(
-                                child: ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxWidth: _kSummaryContentMaxWidth,
+                            if (status == SessionStatus.done && bullets.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  24,
+                                  16,
+                                  0,
+                                ),
+                                child: Text(
+                                  'No summary content available.',
+                                  style: TextStyle(
+                                    color: SummaryThemeColors.onBodySoft(
+                                      context,
+                                    ),
                                   ),
-                                  child: Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: Text(
-                                      'Jump & summarize',
-                                      style: _summarySectionLabelStyle(
-                                        context,
+                                ),
+                              ),
+                            if (!SessionDisplayKind.isChapterBased(
+                              session,
+                            )) ...[
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  22,
+                                  32,
+                                  22,
+                                  10,
+                                ),
+                                child: Center(
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      maxWidth: _kSummaryContentMaxWidth,
+                                    ),
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Text(
+                                        'Jump & summarize',
+                                        style: _summarySectionLabelStyle(
+                                          context,
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
                               ),
-                            ),
-                            Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 22),
-                              child: Center(
-                                child: ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxWidth: _kSummaryContentMaxWidth,
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 22,
+                                ),
+                                child: Center(
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      maxWidth: _kSummaryContentMaxWidth,
+                                    ),
+                                    child: _EpisodeTimelineSection(
+                                      session: session,
+                                    ),
                                   ),
-                                  child: _EpisodeTimelineSection(
-                                      session: session),
                                 ),
                               ),
+                            ],
+                            SizedBox(
+                              height: MediaQuery.paddingOf(context).bottom + 32,
                             ),
                           ],
-                          SizedBox(
-                            height: MediaQuery.paddingOf(context).bottom + 32,
-                          ),
-                        ],
+                        ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  );
+                  return useEpisodeChromeLayout
+                      ? EpisodeArtworkThemeScope(
+                          theme: _episodeArtworkTheme,
+                          child: scroll,
+                        )
+                      : scroll;
+                }(),
                 ValueListenableBuilder<bool>(
                   valueListenable: _mainBottomFadeVisible,
                   builder: (context, showFade, _) {
@@ -2080,11 +2291,7 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                               gradient: LinearGradient(
                                 begin: Alignment.topCenter,
                                 end: Alignment.bottomCenter,
-                                colors: [
-                                  SummaryThemeColors.bgPrimary(context)
-                                      .withValues(alpha: 0),
-                                  SummaryThemeColors.bgPrimary(context),
-                                ],
+                                colors: [pageBg.withValues(alpha: 0), pageBg],
                               ),
                             ),
                           ),
@@ -2245,8 +2452,9 @@ class _CollapsibleChapterTrayState extends State<_CollapsibleChapterTray> {
               child: widget.expandedBody,
             ),
           ),
-          crossFadeState:
-              _open ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+          crossFadeState: _open
+              ? CrossFadeState.showSecond
+              : CrossFadeState.showFirst,
           duration: const Duration(milliseconds: 240),
           sizeCurve: Curves.easeOutCubic,
         ),
@@ -2257,9 +2465,21 @@ class _CollapsibleChapterTrayState extends State<_CollapsibleChapterTray> {
 
 /// Full-bleed ~320px cinema hero: blurred artwork, palette tint, cover, title stack.
 class _CinematicHero extends StatefulWidget {
-  const _CinematicHero({required this.session});
+  const _CinematicHero({
+    required this.session,
+    this.topOverlay,
+    this.bottomBlendColor,
+    this.externalHeroWash,
+  });
 
   final ListeningSession session;
+  final Widget? topOverlay;
+
+  /// Bottom gradient merge color (e.g. cinematic summary page background).
+  final Color? bottomBlendColor;
+
+  /// When set, tints the hero from podcast palette; internal extraction is skipped.
+  final Color? externalHeroWash;
 
   @override
   State<_CinematicHero> createState() => _CinematicHeroState();
@@ -2273,6 +2493,7 @@ class _CinematicHeroState extends State<_CinematicHero> {
   @override
   void initState() {
     super.initState();
+    if (widget.externalHeroWash != null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_extractPalette());
     });
@@ -2281,6 +2502,13 @@ class _CinematicHeroState extends State<_CinematicHero> {
   @override
   void didUpdateWidget(covariant _CinematicHero oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.externalHeroWash != null) return;
+    if (oldWidget.externalHeroWash != null && widget.externalHeroWash == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_extractPalette());
+      });
+      return;
+    }
     if (oldWidget.session.id != widget.session.id ||
         oldWidget.session.artworkUrl != widget.session.artworkUrl) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2298,9 +2526,14 @@ class _CinematicHeroState extends State<_CinematicHero> {
       return;
     }
     try {
-      final gen =
-          await PaletteGenerator.fromImageProvider(NetworkImage(raw));
-      final c = gen.darkVibrantColor?.color ??
+      // perf: Match episode chrome — bounded decode for hero tint extraction.
+      final gen = await PaletteGenerator.fromImageProvider(
+        ResizeImage(NetworkImage(raw), width: 88, height: 88),
+        size: const Size(88, 88),
+        maximumColorCount: 16,
+      );
+      final c =
+          gen.darkVibrantColor?.color ??
           gen.vibrantColor?.color ??
           gen.dominantColor?.color ??
           Tokens.bgPrimary;
@@ -2315,23 +2548,40 @@ class _CinematicHeroState extends State<_CinematicHero> {
     final session = widget.session;
     final url = session.artworkUrl ?? '';
     final raw = session.artworkUrl?.trim();
-    final hasUrl = raw != null &&
+    final hasUrl =
+        raw != null &&
         raw.isNotEmpty &&
         (raw.startsWith('http://') || raw.startsWith('https://'));
+
+    // perf: memCache* keeps decoded textures near on-screen pixel size.
+    final heroMemW = decodeCacheExtent(
+      context,
+      MediaQuery.sizeOf(context).width,
+    );
+    final heroMemH = decodeCacheExtent(context, _heroHeight);
+    const coverLogical = 120.0;
+    final coverMem = decodeCacheExtent(context, coverLogical);
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final cs = Theme.of(context).colorScheme;
     final heroFg = isDark ? Colors.white : cs.onSurface;
-    final heroFgSoft =
-        isDark ? Colors.white.withValues(alpha: 0.7) : cs.onSurfaceVariant;
+    final heroFgSoft = isDark
+        ? Colors.white.withValues(alpha: 0.7)
+        : cs.onSurfaceVariant;
 
     final chapterBased = SessionDisplayKind.isChapterBased(session);
-    final showTimePill = !chapterBased &&
+    final showTimePill =
+        !chapterBased &&
         (session.startTimeSec > 0 || session.endTimeSec != null);
 
     final letter = session.artist.trim().isNotEmpty
         ? session.artist.trim()[0].toUpperCase()
         : '?';
+
+    final blendBottom =
+        widget.bottomBlendColor ?? SummaryThemeColors.bgPrimary(context);
+
+    final wash = widget.externalHeroWash ?? _tint;
 
     final blurredLayer = hasUrl
         ? RepaintBoundary(
@@ -2342,14 +2592,14 @@ class _CinematicHeroState extends State<_CinematicHero> {
                 fit: BoxFit.cover,
                 width: double.infinity,
                 height: _heroHeight,
+                memCacheWidth: heroMemW,
+                memCacheHeight: heroMemH,
                 color: Colors.black.withValues(alpha: 0.35),
                 colorBlendMode: BlendMode.darken,
-                placeholder: (context, _) => Container(
-                  color: SummaryThemeColors.bgSurface(context),
-                ),
-                errorWidget: (context, url, err) => Container(
-                  color: SummaryThemeColors.bgSurface(context),
-                ),
+                placeholder: (context, _) =>
+                    Container(color: SummaryThemeColors.bgSurface(context)),
+                errorWidget: (context, url, err) =>
+                    Container(color: SummaryThemeColors.bgSurface(context)),
               ),
             ),
           )
@@ -2371,8 +2621,8 @@ class _CinematicHeroState extends State<_CinematicHero> {
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 600),
               curve: Curves.easeOutCubic,
-              color: _tint != null
-                  ? _tint!.withValues(alpha: 0.15)
+              color: wash != null
+                  ? wash.withValues(alpha: 0.15)
                   : Colors.transparent,
             ),
           ),
@@ -2386,14 +2636,15 @@ class _CinematicHeroState extends State<_CinematicHero> {
                   colors: [
                     Colors.black.withValues(alpha: 0.1),
                     Colors.transparent,
-                    SummaryThemeColors.bgPrimary(context)
-                        .withValues(alpha: 0.7),
-                    SummaryThemeColors.bgPrimary(context),
+                    blendBottom.withValues(alpha: 0.7),
+                    blendBottom,
                   ],
                 ),
               ),
             ),
           ),
+          if (widget.topOverlay != null)
+            Positioned(top: 0, left: 0, right: 0, child: widget.topOverlay!),
           Positioned(
             top: 0,
             left: 0,
@@ -2427,6 +2678,8 @@ class _CinematicHeroState extends State<_CinematicHero> {
                           fit: BoxFit.cover,
                           width: 120,
                           height: 120,
+                          memCacheWidth: coverMem,
+                          memCacheHeight: coverMem,
                           placeholder: (context, _) => Container(
                             color: SummaryThemeColors.bgElevated(context),
                             alignment: Alignment.center,
@@ -2468,120 +2721,119 @@ class _CinematicHeroState extends State<_CinematicHero> {
               ),
             ),
           ),
-          Positioned(
-            bottom: 0,
-            left: 16,
-            right: 16,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Text(
-                  session.title,
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.syne(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: heroFg,
-                    shadows: [
-                      Shadow(
-                        color: Colors.black.withValues(
-                          alpha: isDark ? 0.5 : 0.12,
-                        ),
-                        blurRadius: 8,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  session.artist,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: heroFgSoft,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (chapterBased)
-                  Container(
-                    constraints: const BoxConstraints(maxWidth: 320),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.black.withValues(alpha: 0.42)
-                          : cs.surfaceContainerHighest.withValues(alpha: 0.92),
-                      borderRadius: BorderRadius.circular(22),
-                      border: Border.all(
-                        color: isDark
-                            ? Colors.white.withValues(alpha: 0.18)
-                            : cs.outlineVariant,
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.menu_book_outlined,
-                          size: 17,
-                          color: heroFg,
-                        ),
-                        const SizedBox(width: 10),
-                        Flexible(
-                          child: Text(
-                            _chapterHeroSubtitle(session),
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                              height: 1.25,
-                              color: heroFg,
-                            ),
+          if (widget.topOverlay == null)
+            Positioned(
+              bottom: 0,
+              left: 16,
+              right: 16,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Text(
+                    session.title,
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.syne(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: heroFg,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black.withValues(
+                            alpha: isDark ? 0.5 : 0.12,
                           ),
+                          blurRadius: 8,
                         ),
                       ],
                     ),
-                  )
-                else if (showTimePill)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.black.withValues(alpha: 0.4)
-                          : cs.surfaceContainerHighest.withValues(alpha: 0.9),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: isDark
-                            ? Colors.white.withValues(alpha: 0.2)
-                            : cs.outlineVariant,
-                        width: 1,
-                      ),
-                    ),
-                    child: Text(
-                      _summaryDurationLabel(session),
-                      style: GoogleFonts.dmMono(
-                        fontSize: 12,
-                        color: heroFg,
-                      ),
-                    ),
                   ),
-                const SizedBox(height: 16),
-              ],
+                  const SizedBox(height: 4),
+                  Text(
+                    session.artist,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 13, color: heroFgSoft),
+                  ),
+                  const SizedBox(height: 8),
+                  if (chapterBased)
+                    Container(
+                      constraints: const BoxConstraints(maxWidth: 320),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? Colors.black.withValues(alpha: 0.42)
+                            : cs.surfaceContainerHighest.withValues(
+                                alpha: 0.92,
+                              ),
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(
+                          color: isDark
+                              ? Colors.white.withValues(alpha: 0.18)
+                              : cs.outlineVariant,
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.menu_book_outlined,
+                            size: 17,
+                            color: heroFg,
+                          ),
+                          const SizedBox(width: 10),
+                          Flexible(
+                            child: Text(
+                              _chapterHeroSubtitle(session),
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                                height: 1.25,
+                                color: heroFg,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (showTimePill)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? Colors.white
+                            : cs.surfaceContainerHighest.withValues(alpha: 0.9),
+                        borderRadius: BorderRadius.circular(12),
+                        border: isDark
+                            ? null
+                            : Border.all(color: cs.outlineVariant, width: 1),
+                      ),
+                      child: Text(
+                        _summaryDurationLabel(session),
+                        style: GoogleFonts.dmMono(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600,
+                          color: isDark ? _kSummaryOnWhiteFg : heroFg,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -2595,6 +2847,7 @@ class _SummarySectionTabsView extends StatefulWidget {
     required this.accent,
     required this.useStructuredBookCards,
     required this.listenSession,
+    this.insightCardsUseArtworkTheme = false,
     required this.onAllBulletsComplete,
   });
 
@@ -2602,6 +2855,7 @@ class _SummarySectionTabsView extends StatefulWidget {
   final Color accent;
   final bool useStructuredBookCards;
   final ListeningSession listenSession;
+  final bool insightCardsUseArtworkTheme;
   final VoidCallback onAllBulletsComplete;
 
   @override
@@ -2642,6 +2896,7 @@ class _SummarySectionTabsViewState extends State<_SummarySectionTabsView> {
         accent: widget.accent,
         listenSession: widget.listenSession,
         timestampAt: parts.at,
+        showInsightBannerRow: widget.insightCardsUseArtworkTheme,
         onShare: () => _shareInsightCard(context, parts.body),
         child: Text(
           parts.body,
@@ -2686,8 +2941,7 @@ class _SummarySectionTabsViewState extends State<_SummarySectionTabsView> {
                       duration: const Duration(milliseconds: 180),
                       curve: Curves.easeOutCubic,
                       padding: EdgeInsets.symmetric(
-                        horizontal:
-                            widget.useStructuredBookCards ? 16 : 12,
+                        horizontal: widget.useStructuredBookCards ? 16 : 12,
                         vertical: 11,
                       ),
                       constraints: widget.useStructuredBookCards
@@ -2698,15 +2952,16 @@ class _SummarySectionTabsViewState extends State<_SummarySectionTabsView> {
                         color: i == _selected
                             ? accent.withValues(alpha: 0.22)
                             : (isDark
-                                ? Colors.white.withValues(alpha: 0.06)
-                                : cs.surfaceContainerHighest
-                                    .withValues(alpha: 0.85)),
+                                  ? Colors.white.withValues(alpha: 0.06)
+                                  : cs.surfaceContainerHighest.withValues(
+                                      alpha: 0.85,
+                                    )),
                         border: Border.all(
                           color: i == _selected
                               ? accent.withValues(alpha: 0.65)
                               : (isDark
-                                  ? Colors.white.withValues(alpha: 0.14)
-                                  : cs.outlineVariant),
+                                    ? Colors.white.withValues(alpha: 0.14)
+                                    : cs.outlineVariant),
                           width: i == _selected ? 1.5 : 1,
                         ),
                       ),
@@ -2721,8 +2976,7 @@ class _SummarySectionTabsViewState extends State<_SummarySectionTabsView> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize:
-                              widget.useStructuredBookCards ? 13 : 14,
+                          fontSize: widget.useStructuredBookCards ? 13 : 14,
                           fontWeight: i == _selected
                               ? FontWeight.w700
                               : FontWeight.w600,
@@ -2731,11 +2985,11 @@ class _SummarySectionTabsViewState extends State<_SummarySectionTabsView> {
                               : const [ui.FontFeature.tabularFigures()],
                           color: i == _selected
                               ? (isDark
-                                  ? Colors.white.withValues(alpha: 0.96)
-                                  : cs.onSurface)
+                                    ? Colors.white.withValues(alpha: 0.96)
+                                    : cs.onSurface)
                               : (isDark
-                                  ? Colors.white.withValues(alpha: 0.65)
-                                  : cs.onSurfaceVariant),
+                                    ? Colors.white.withValues(alpha: 0.65)
+                                    : cs.onSurfaceVariant),
                         ),
                       ),
                     ),
@@ -2764,12 +3018,7 @@ class _SummarySectionTabsViewState extends State<_SummarySectionTabsView> {
                   fit: StackFit.expand,
                   children: [
                     SingleChildScrollView(
-                      padding: const EdgeInsets.fromLTRB(
-                        20,
-                        20,
-                        22,
-                        80,
-                      ),
+                      padding: const EdgeInsets.fromLTRB(20, 20, 22, 80),
                       child: _panelBody(),
                     ),
                     Positioned(
@@ -2784,8 +3033,9 @@ class _SummarySectionTabsViewState extends State<_SummarySectionTabsView> {
                               begin: Alignment.topCenter,
                               end: Alignment.bottomCenter,
                               colors: [
-                                SummaryThemeColors.bgPrimary(context)
-                                    .withValues(alpha: 0),
+                                SummaryThemeColors.bgPrimary(
+                                  context,
+                                ).withValues(alpha: 0),
                                 SummaryThemeColors.bgPrimary(context),
                               ],
                             ),
@@ -2813,6 +3063,7 @@ class _TypingOrInstantBullets extends StatefulWidget {
     required this.accent,
     this.useStructuredBookCards = false,
     this.useVerticalStack = false,
+    this.insightCardsUseArtworkTheme = false,
     required this.onAllBulletsComplete,
   });
 
@@ -2820,10 +3071,15 @@ class _TypingOrInstantBullets extends StatefulWidget {
   final ListeningSession listenSession;
   final List<String> bullets;
   final Color accent;
+
   /// Audiobook / Gutenberg: section titles + plain body (no markdown / no # chips).
   final bool useStructuredBookCards;
+
   /// When true, never use horizontal 1–5 point tabs (main summary uses section tabs).
   final bool useVerticalStack;
+
+  /// INSIGHT banner row on glass bullet cards (cinematic layout).
+  final bool insightCardsUseArtworkTheme;
   final VoidCallback onAllBulletsComplete;
 
   @override
@@ -2838,8 +3094,9 @@ class _TypingOrInstantBulletsState extends State<_TypingOrInstantBullets> {
   @override
   void initState() {
     super.initState();
-    _playedFuture =
-        MomentsStatsService.hasSummaryTypewriterPlayed(widget.sessionId);
+    _playedFuture = MomentsStatsService.hasSummaryTypewriterPlayed(
+      widget.sessionId,
+    );
   }
 
   void _scheduleInstantQuotesUnlock() {
@@ -2858,6 +3115,7 @@ class _TypingOrInstantBulletsState extends State<_TypingOrInstantBullets> {
         accent: widget.accent,
         useStructuredBookCards: widget.useStructuredBookCards,
         listenSession: widget.listenSession,
+        insightCardsUseArtworkTheme: widget.insightCardsUseArtworkTheme,
         onAllBulletsComplete: widget.onAllBulletsComplete,
       );
     }
@@ -2895,18 +3153,20 @@ class _TypingOrInstantBulletsState extends State<_TypingOrInstantBullets> {
                   accent: widget.accent,
                   title: parsed.title,
                   sectionIndex: j + 1,
-                  sharePlain:
-                      _bookSectionSharePlain(parsed.title, j + 1, parsed.body),
+                  sharePlain: _bookSectionSharePlain(
+                    parsed.title,
+                    j + 1,
+                    parsed.body,
+                  ),
                   body: Text(
                     parsed.body,
                     style: TextStyle(
                       fontSize: j == 0 ? 17 : 16,
-                      fontWeight:
-                          j == 0 ? FontWeight.w500 : FontWeight.w400,
+                      fontWeight: j == 0 ? FontWeight.w500 : FontWeight.w400,
                       height: 1.72,
-                      color: SummaryThemeColors.onBody(context).withValues(
-                        alpha: j == 0 ? 0.94 : 0.88,
-                      ),
+                      color: SummaryThemeColors.onBody(
+                        context,
+                      ).withValues(alpha: j == 0 ? 0.94 : 0.88),
                     ),
                   ),
                 ),
@@ -2917,6 +3177,7 @@ class _TypingOrInstantBulletsState extends State<_TypingOrInstantBullets> {
                   accent: widget.accent,
                   listenSession: widget.listenSession,
                   timestampAt: parts.at,
+                  showInsightBannerRow: widget.insightCardsUseArtworkTheme,
                   onShare: () => _shareInsightCard(context, parts.body),
                   child: Text(
                     parts.body,
@@ -2937,9 +3198,11 @@ class _TypingOrInstantBulletsState extends State<_TypingOrInstantBullets> {
           accent: widget.accent,
           listenSession: widget.listenSession,
           useStructuredBookCards: widget.useStructuredBookCards,
+          insightCardsUseArtworkTheme: widget.insightCardsUseArtworkTheme,
           onAllBulletsComplete: () {
-            MomentsStatsService.markSummaryTypewriterPlayed(widget.sessionId)
-                .then((_) {
+            MomentsStatsService.markSummaryTypewriterPlayed(
+              widget.sessionId,
+            ).then((_) {
               if (mounted) widget.onAllBulletsComplete();
             });
           },
@@ -2955,6 +3218,7 @@ class _SequentialTypeBullets extends StatefulWidget {
     required this.accent,
     required this.listenSession,
     this.useStructuredBookCards = false,
+    this.insightCardsUseArtworkTheme = false,
     this.onAllBulletsComplete,
   });
 
@@ -2962,6 +3226,7 @@ class _SequentialTypeBullets extends StatefulWidget {
   final Color accent;
   final ListeningSession listenSession;
   final bool useStructuredBookCards;
+  final bool insightCardsUseArtworkTheme;
   final VoidCallback? onAllBulletsComplete;
 
   @override
@@ -2979,8 +3244,7 @@ class _SequentialTypeBulletsState extends State<_SequentialTypeBullets> {
     final children = <Widget>[];
     for (var j = 0; j < _completed; j++) {
       if (j > 0) {
-        children.add(SizedBox(
-            height: widget.useStructuredBookCards ? 20 : 16));
+        children.add(SizedBox(height: widget.useStructuredBookCards ? 20 : 16));
       }
       final parts = _splitEpisodeTimestamp(widget.bullets[j]);
       if (widget.useStructuredBookCards) {
@@ -2990,17 +3254,20 @@ class _SequentialTypeBulletsState extends State<_SequentialTypeBullets> {
             accent: widget.accent,
             title: parsed.title,
             sectionIndex: j + 1,
-            sharePlain:
-                _bookSectionSharePlain(parsed.title, j + 1, parsed.body),
+            sharePlain: _bookSectionSharePlain(
+              parsed.title,
+              j + 1,
+              parsed.body,
+            ),
             body: Text(
               parsed.body,
               style: TextStyle(
                 fontSize: j == 0 ? 17 : 16,
                 fontWeight: j == 0 ? FontWeight.w500 : FontWeight.w400,
                 height: 1.72,
-                color: SummaryThemeColors.onBody(context).withValues(
-                  alpha: j == 0 ? 0.94 : 0.88,
-                ),
+                color: SummaryThemeColors.onBody(
+                  context,
+                ).withValues(alpha: j == 0 ? 0.94 : 0.88),
               ),
             ),
           ),
@@ -3011,19 +3278,16 @@ class _SequentialTypeBulletsState extends State<_SequentialTypeBullets> {
             accent: widget.accent,
             listenSession: widget.listenSession,
             timestampAt: parts.at,
+            showInsightBannerRow: widget.insightCardsUseArtworkTheme,
             onShare: () => _shareInsightCard(context, parts.body),
-            child: Text(
-              parts.body,
-              style: _summaryBulletStyle(context, j + 1),
-            ),
+            child: Text(parts.body, style: _summaryBulletStyle(context, j + 1)),
           ),
         );
       }
     }
     if (_completed < widget.bullets.length) {
       if (_completed > 0) {
-        children.add(SizedBox(
-            height: widget.useStructuredBookCards ? 20 : 16));
+        children.add(SizedBox(height: widget.useStructuredBookCards ? 20 : 16));
       }
       final cur = _splitEpisodeTimestamp(widget.bullets[_completed]);
       final parsed = parseSummaryBulletSections(cur.body);
@@ -3044,12 +3308,11 @@ class _SequentialTypeBulletsState extends State<_SequentialTypeBullets> {
               charsPerSecond: 200,
               style: TextStyle(
                 fontSize: _completed == 0 ? 17 : 16,
-                fontWeight:
-                    _completed == 0 ? FontWeight.w500 : FontWeight.w400,
+                fontWeight: _completed == 0 ? FontWeight.w500 : FontWeight.w400,
                 height: 1.72,
-                color: SummaryThemeColors.onBody(context).withValues(
-                  alpha: _completed == 0 ? 0.94 : 0.88,
-                ),
+                color: SummaryThemeColors.onBody(
+                  context,
+                ).withValues(alpha: _completed == 0 ? 0.94 : 0.88),
               ),
               onComplete: () {
                 setState(() {
@@ -3068,6 +3331,7 @@ class _SequentialTypeBulletsState extends State<_SequentialTypeBullets> {
             accent: widget.accent,
             listenSession: widget.listenSession,
             timestampAt: cur.at,
+            showInsightBannerRow: widget.insightCardsUseArtworkTheme,
             onShare: () => _shareInsightCard(context, cur.body),
             child: TypewriteText(
               key: ValueKey('tw-$_completed-${widget.bullets[_completed]}'),
@@ -3180,8 +3444,7 @@ class _BookSummarySectionCard extends StatelessWidget {
                             ],
                           ),
                         ),
-                        if (sharePlain != null &&
-                            sharePlain!.trim().isNotEmpty)
+                        if (sharePlain != null && sharePlain!.trim().isNotEmpty)
                           Positioned(
                             top: 0,
                             right: 0,
@@ -3221,6 +3484,7 @@ class _GlassBulletCard extends StatelessWidget {
     required this.child,
     required this.onShare,
     this.timestampAt,
+    this.showInsightBannerRow = false,
   });
 
   final Color accent;
@@ -3231,20 +3495,39 @@ class _GlassBulletCard extends StatelessWidget {
   /// Episode clock for this bullet (shown above [child], next to the text block).
   final String? timestampAt;
 
+  /// Gold “INSIGHT” label row above the bullet (cinematic layout).
+  final bool showInsightBannerRow;
+
   @override
   Widget build(BuildContext context) {
+    final artworkTheme = EpisodeArtworkThemeScope.maybeOf(context);
+    final cardBg = showInsightBannerRow
+        ? (artworkTheme?.cardRaised ?? EpisodeChromeDefaults.cardRaised)
+              .withValues(alpha: 0.94)
+        : (artworkTheme != null
+              ? artworkTheme.cardRaised.withValues(alpha: 0.78)
+              : Colors.white.withValues(alpha: 0.045));
+    final borderC = showInsightBannerRow
+        ? Colors.white.withValues(alpha: 0.1)
+        : Colors.white.withValues(alpha: 0.1);
+    final insightColor =
+        artworkTheme?.insightAccent ?? EpisodeChromeDefaults.insightHighlight;
+    final railAccent = showInsightBannerRow
+        ? insightColor
+        : (artworkTheme?.accent ?? _kSummaryCyan);
     return RepaintBoundary(
       child: ClipRRect(
         borderRadius: BorderRadius.circular(Tokens.radiusLg),
         child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          filter: ui.ImageFilter.blur(
+            sigmaX: showInsightBannerRow ? 14 : 20,
+            sigmaY: showInsightBannerRow ? 14 : 20,
+          ),
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.045),
+              color: cardBg,
               borderRadius: BorderRadius.circular(Tokens.radiusLg),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.1),
-              ),
+              border: Border.all(color: borderC),
             ),
             child: IntrinsicHeight(
               child: Row(
@@ -3253,7 +3536,7 @@ class _GlassBulletCard extends StatelessWidget {
                   Container(
                     width: 3,
                     decoration: BoxDecoration(
-                      color: _kSummaryCyan,
+                      color: railAccent,
                       borderRadius: BorderRadius.only(
                         topLeft: Radius.circular(Tokens.radiusLg),
                         bottomLeft: Radius.circular(Tokens.radiusLg),
@@ -3269,10 +3552,33 @@ class _GlassBulletCard extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
+                              if (showInsightBannerRow) ...[
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.show_chart_rounded,
+                                      size: 16,
+                                      color: insightColor,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'INSIGHT',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 1.1,
+                                        color: insightColor,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                              ],
                               if (timestampAt != null &&
                                   timestampAt!.isNotEmpty) ...[
                                 if (SessionDisplayKind.isChapterBased(
-                                    listenSession))
+                                  listenSession,
+                                ))
                                   _EpisodeTimestampPill(at: timestampAt!)
                                 else
                                   _TappableEpisodeTimestampPill(
@@ -3298,7 +3604,9 @@ class _GlassBulletCard extends StatelessWidget {
                             icon: Icon(
                               Icons.north_east_rounded,
                               size: 18,
-                              color: Colors.white.withValues(alpha: 0.45),
+                              color:
+                                  artworkTheme?.meta.withValues(alpha: 0.9) ??
+                                  Colors.white.withValues(alpha: 0.45),
                             ),
                             onPressed: onShare,
                           ),
@@ -3332,16 +3640,19 @@ class _MagazineQuoteCard extends StatelessWidget {
     final parts = _splitEpisodeTimestamp(text);
     final body = parts.body;
     final heardAt = parts.at;
+    final art = EpisodeArtworkThemeScope.maybeOf(context);
 
     return RepaintBoundary(
       child: Container(
         margin: const EdgeInsets.only(bottom: 16),
         padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
         decoration: BoxDecoration(
-          color: SummaryThemeColors.bgSurface(context),
+          color: art?.cardRaised ?? SummaryThemeColors.bgSurface(context),
           borderRadius: BorderRadius.circular(Tokens.radiusLg),
           border: Border.all(
-            color: SummaryThemeColors.borderLight(context),
+            color: art != null
+                ? Colors.white.withValues(alpha: 0.12)
+                : SummaryThemeColors.borderLight(context),
           ),
         ),
         child: Stack(
@@ -3387,7 +3698,7 @@ class _MagazineQuoteCard extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 12,
                       height: 1.35,
-                      color: SummaryThemeColors.textMuted(context),
+                      color: art?.meta ?? SummaryThemeColors.textMuted(context),
                     ),
                   ),
                 ],
@@ -3399,14 +3710,11 @@ class _MagazineQuoteCard extends StatelessWidget {
               child: IconButton(
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(
-                  minWidth: 36,
-                  minHeight: 36,
-                ),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 icon: Icon(
                   Icons.north_east_rounded,
                   size: 18,
-                  color: SummaryThemeColors.onBodySoft(context),
+                  color: art?.meta ?? SummaryThemeColors.onBodySoft(context),
                 ),
                 onPressed: () => _shareInsightCard(context, body),
               ),
@@ -3459,14 +3767,17 @@ class _TagsRow extends ConsumerWidget {
     ListeningSession session,
   ) async {
     final controller = TextEditingController(text: session.tags ?? '');
+    final sheetArt = EpisodeArtworkThemeScope.maybeOf(context);
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: SummaryThemeColors.bgElevated(context),
+      backgroundColor:
+          sheetArt?.cardRaised ?? SummaryThemeColors.bgElevated(context),
       isScrollControlled: true,
       builder: (ctx) {
         final onBody = SummaryThemeColors.onBody(ctx);
         final onSoft = SummaryThemeColors.onBodySoft(ctx);
-        return Padding(
+        final accent = sheetArt?.accent;
+        Widget sheetBody = Padding(
           padding: EdgeInsets.only(
             left: 16,
             right: 16,
@@ -3480,7 +3791,7 @@ class _TagsRow extends ConsumerWidget {
               Text(
                 'Tags',
                 style: TextStyle(
-                  color: onBody,
+                  color: sheetArt?.meta ?? onBody,
                   fontSize: 18,
                   fontWeight: FontWeight.w600,
                 ),
@@ -3488,10 +3799,7 @@ class _TagsRow extends ConsumerWidget {
               const SizedBox(height: 8),
               Text(
                 'Comma-separated (e.g. work, ideas, health)',
-                style: TextStyle(
-                  color: onSoft,
-                  fontSize: 13,
-                ),
+                style: TextStyle(color: sheetArt?.meta ?? onSoft, fontSize: 13),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -3499,22 +3807,45 @@ class _TagsRow extends ConsumerWidget {
                 style: TextStyle(color: onBody),
                 decoration: InputDecoration(
                   hintText: 'work, ideas',
-                  hintStyle: TextStyle(
-                    color: onSoft.withValues(alpha: 0.65),
-                  ),
+                  hintStyle: TextStyle(color: onSoft.withValues(alpha: 0.65)),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color:
+                          accent?.withValues(alpha: 0.28) ??
+                          SummaryThemeColors.borderLight(ctx),
+                    ),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color:
+                          accent?.withValues(alpha: 0.28) ??
+                          SummaryThemeColors.borderLight(ctx),
+                    ),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: accent ?? Theme.of(ctx).colorScheme.primary,
+                      width: 1.5,
+                    ),
                   ),
                 ),
               ),
               const SizedBox(height: 16),
               FilledButton(
+                style: accent != null
+                    ? FilledButton.styleFrom(
+                        backgroundColor: accent,
+                        foregroundColor: _kSummaryOnWhiteFg,
+                      )
+                    : null,
                 onPressed: () async {
                   final v = controller.text.trim();
-                  await ref.read(sessionActionsProvider).updateSessionTags(
-                        session.id,
-                        v.isEmpty ? null : v,
-                      );
+                  await ref
+                      .read(sessionActionsProvider)
+                      .updateSessionTags(session.id, v.isEmpty ? null : v);
                   ref.invalidate(sessionByIdProvider(session.id));
                   ref.invalidate(allSessionsProvider);
                   if (ctx.mounted) Navigator.pop(ctx);
@@ -3524,20 +3855,28 @@ class _TagsRow extends ConsumerWidget {
             ],
           ),
         );
+        if (sheetArt != null) {
+          sheetBody = EpisodeArtworkThemeScope(
+            theme: sheetArt,
+            child: sheetBody,
+          );
+        }
+        return sheetBody;
       },
     );
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final art = EpisodeArtworkThemeScope.maybeOf(context);
     final raw = session.tags?.trim();
     final parts = raw == null || raw.isEmpty
         ? <String>[]
         : raw
-            .split(',')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList();
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3550,12 +3889,15 @@ class _TagsRow extends ConsumerWidget {
                 fontSize: 11,
                 letterSpacing: 1.2,
                 fontWeight: FontWeight.w600,
-                color: SummaryThemeColors.textMuted(context),
+                color: art?.meta ?? SummaryThemeColors.textMuted(context),
               ),
             ),
             const Spacer(),
             TextButton(
               onPressed: () => _edit(context, ref, session),
+              style: art != null
+                  ? TextButton.styleFrom(foregroundColor: art.accent)
+                  : null,
               child: const Text('Edit'),
             ),
           ],
@@ -3565,7 +3907,7 @@ class _TagsRow extends ConsumerWidget {
             'Add tags to organize in your library.',
             style: TextStyle(
               fontSize: 12,
-              color: SummaryThemeColors.onBodySoft(context),
+              color: art?.meta ?? SummaryThemeColors.onBodySoft(context),
             ),
           )
         else
@@ -3574,11 +3916,26 @@ class _TagsRow extends ConsumerWidget {
             runSpacing: 6,
             children: parts
                 .map(
-                  (t) => Chip(
-                    label: Text(t),
-                    visualDensity: VisualDensity.compact,
-                    labelStyle: const TextStyle(fontSize: 12),
-                  ),
+                  (t) => art != null
+                      ? Chip(
+                          label: Text(
+                            t,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white.withValues(alpha: 0.92),
+                            ),
+                          ),
+                          visualDensity: VisualDensity.compact,
+                          backgroundColor: art.chipFill,
+                          side: BorderSide(
+                            color: art.accent.withValues(alpha: 0.38),
+                          ),
+                        )
+                      : Chip(
+                          label: Text(t),
+                          visualDensity: VisualDensity.compact,
+                          labelStyle: const TextStyle(fontSize: 12),
+                        ),
                 )
                 .toList(),
           ),
@@ -3600,17 +3957,18 @@ class _ErrorCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Tokens.errorDim,
         borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(
-          color: Tokens.error.withValues(alpha: 0.3),
-        ),
+        border: Border.all(color: Tokens.error.withValues(alpha: 0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.error_outline_rounded,
-                  color: Colors.white70, size: 20),
+              const Icon(
+                Icons.error_outline_rounded,
+                color: Colors.white70,
+                size: 20,
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -3646,7 +4004,8 @@ class _EpisodeTimelineSection extends ConsumerStatefulWidget {
       _EpisodeTimelineSectionState();
 }
 
-class _EpisodeTimelineSectionState extends ConsumerState<_EpisodeTimelineSection> {
+class _EpisodeTimelineSectionState
+    extends ConsumerState<_EpisodeTimelineSection> {
   late double _rangeStart;
   late double _rangeEnd;
 
@@ -3714,14 +4073,16 @@ class _EpisodeTimelineSectionState extends ConsumerState<_EpisodeTimelineSection
             overlayColor: Colors.white24,
           ),
           child: Slider(
-            value: _rangeStart.clamp(absMin, startMax <= absMin ? absMin : startMax),
+            value: _rangeStart.clamp(
+              absMin,
+              startMax <= absMin ? absMin : startMax,
+            ),
             min: absMin,
             max: startMax <= absMin ? absMin + 1 : startMax,
             onChanged: (v) => setState(() {
               _rangeStart = v;
               if (_rangeEnd <= _rangeStart + 60) {
-                _rangeEnd =
-                    (_rangeStart + 60).clamp(endMin, absMax).toDouble();
+                _rangeEnd = (_rangeStart + 60).clamp(endMin, absMax).toDouble();
               }
             }),
           ),
@@ -3766,10 +4127,9 @@ class _EpisodeTimelineSectionState extends ConsumerState<_EpisodeTimelineSection
               rangeLabel: '${_fmt(startR)} – ${_fmt(endR)}',
             );
             final st = SummaryStyle.fromJson(widget.session.summaryStyle);
-            await ref.read(sessionActionsProvider).retrySummary(
-                  widget.session.id,
-                  style: st,
-                );
+            await ref
+                .read(sessionActionsProvider)
+                .retrySummary(widget.session.id, style: st);
             ref.invalidate(sessionByIdProvider(widget.session.id));
             ref.invalidate(allSessionsProvider);
             if (context.mounted) {
@@ -3842,7 +4202,8 @@ class _SummaryLayoutSkeleton extends StatelessWidget {
                   const SizedBox(height: 8),
                   Container(
                     height: 14,
-                    width: MediaQuery.sizeOf(context).width * (i == 0 ? 0.7 : 0.5),
+                    width:
+                        MediaQuery.sizeOf(context).width * (i == 0 ? 0.7 : 0.5),
                     decoration: BoxDecoration(
                       color: base,
                       borderRadius: BorderRadius.circular(6),

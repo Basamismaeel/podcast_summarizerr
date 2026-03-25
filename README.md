@@ -61,6 +61,12 @@ Models are tried in order (**`gemini-2.5-flash`** first, then lite, then 2.0 var
 
 **Audible is not supported for AI summaries.** Audiobooks and Audible exclusives use DRM; there is no legal public audio URL for services like Deepgram to download and transcribe. The app will detect an Audible link in the clipboard and explain this — use **Apple Podcasts** or **Spotify** if the same show exists there, or **Manual Entry**.
 
+## Performance and profiling
+
+- **Profile or release** when judging scroll speed, jank, or list performance. Debug JIT exaggerates frame cost. From the project root: `flutter run --profile` (or `--release`). In VS Code / Cursor, use the launch configuration **podcast_safety_net (profile)** or **(release)** in `.vscode/launch.json`.
+- **Flutter DevTools**: after the app is running, the tool usually prints a DevTools URL; you can also run `dart devtools` and connect to the device session. Use the **Performance** overlay for frame timing and the **CPU Profiler** for hot Dart code.
+- **Rendering**: Android enables **Impeller** via `io.flutter.embedding.android.EnableImpeller` in `android/app/src/main/AndroidManifest.xml`. iOS sets **`FLTEnableImpeller`** in `ios/Runner/Info.plist` so Impeller use is explicit.
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.

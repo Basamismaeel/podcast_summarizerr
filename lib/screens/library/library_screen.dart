@@ -11,6 +11,7 @@ class LibraryScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       backgroundColor: PodcastHomeColors.scaffold(context),
@@ -50,10 +51,16 @@ class LibraryScreen extends StatelessWidget {
             case 3:
               return const SizedBox(height: Tokens.spaceLg);
             default:
-              return FilledButton.tonalIcon(
+              return FilledButton.icon(
                 onPressed: () => context.go('/'),
                 icon: const Icon(Icons.home_rounded),
                 label: const Text('Go to Home'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                  backgroundColor:
+                      isDark ? PodcastHomeColors.accent(context) : null,
+                  foregroundColor: isDark ? Colors.white : null,
+                ),
               );
           }
         },

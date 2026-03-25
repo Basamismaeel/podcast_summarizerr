@@ -2,21 +2,21 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
-/// Snipd-inspired dark podcast UI tokens (layout/colors only).
-abstract final class SnipdStyle {
+/// Dark-mode shell for Home, Library, nav, and shared sheets (blue naval theme).
+abstract final class PodcastDarkTokens {
   static const Color bgDeep = Color(0xFF070D1A);
   static const Color card = Color(0xFF0F1C30);
   static const Color label = Color(0xFFBDD4EE);
   static const Color meta = Color(0xFF5E82A8);
-  /// Matches app primary (deeper blue — consistent with Material dark seed).
+
+  /// Strong blue accent (aligned with typical Material primary in this app).
   static const Color accent = Color(0xFF2563EB);
   static const Color title = Color(0xFFFFFFFF);
 
   static Color get borderSubtle =>
       const Color(0xFF64B4FF).withValues(alpha: 0.1);
 
-  static Color get chipFill =>
-      const Color(0xFF38BDF8).withValues(alpha: 0.08);
+  static Color get chipFill => const Color(0xFF38BDF8).withValues(alpha: 0.08);
 
   static Color get miniBarBg =>
       const Color(0xFF0F1C30).withValues(alpha: 0.97);
@@ -24,8 +24,7 @@ abstract final class SnipdStyle {
   static Color get bottomNavBg =>
       const Color(0xFF070D1A).withValues(alpha: 0.97);
 
-  static Border get cardBorder =>
-      Border.all(color: borderSubtle, width: 1);
+  static Border get cardBorder => Border.all(color: borderSubtle, width: 1);
 
   static BoxDecoration get quickNavCardDecoration => BoxDecoration(
         color: card,
