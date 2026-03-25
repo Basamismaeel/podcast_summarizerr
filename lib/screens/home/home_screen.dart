@@ -2,13 +2,16 @@ import 'dart:async';
 import 'dart:ui' show FontFeature, ImageFilter;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../core/haptics.dart';
+import '../../core/podcast_home_colors.dart';
 import '../../core/snipd_style.dart';
 import '../../core/tokens.dart';
+import '../../debug/agent_ndjson_log.dart';
 import '../../database/database.dart';
 import '../../models/summary_style.dart';
 import '../../providers/session_provider.dart';
@@ -27,8 +30,65 @@ import 'widgets/session_card.dart';
 
 const _kEdgePadding = Tokens.spaceMd;
 const _kCardSpacing = 4.0;
+
+/// Wall-clock position inside an episode (not time of day).
+String _formatEpisodePosition(int seconds) {
+  final s = seconds < 0 ? 0 : seconds;
+  final h = s ~/ 3600;
+  final m = (s % 3600) ~/ 60;
+  final sec = s % 60;
+  if (h > 0) {
+    return '$h:${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
+  }
+  return '$m:${sec.toString().padLeft(2, '0')}';
+}
+
+String _humanClipDuration(int start, int end) {
+  final d = end - start;
+  if (d <= 0) return '—';
+  if (d < 60) return '$d sec';
+  final h = d ~/ 3600;
+  final m = (d % 3600) ~/ 60;
+  final s = d % 60;
+  if (h > 0) {
+    if (m == 0 && s == 0) return '${h}h';
+    if (s == 0) return '${h}h ${m}m';
+    return '${h}h ${m}m ${s}s';
+  }
+  if (m > 0 && s == 0) return m == 1 ? '1 min' : '$m min';
+  if (m > 0) return '$m min $s sec';
+  return '$s sec';
+}
+
+/// Parses typed episode positions: `42` (seconds), `5:30`, `1:05:30`.
+int? _parseEpisodePositionInput(String raw) {
+  final t = raw.trim().replaceAll(RegExp(r'\s+'), '');
+  if (t.isEmpty) return null;
+  final parts = t.split(':');
+  if (parts.length == 1) {
+    final n = int.tryParse(parts[0]);
+    if (n == null || n < 0) return null;
+    return n;
+  }
+  if (parts.length == 2) {
+    final m = int.tryParse(parts[0]);
+    final s = int.tryParse(parts[1]);
+    if (m == null || s == null || m < 0 || s < 0 || s >= 60) return null;
+    return m * 60 + s;
+  }
+  if (parts.length == 3) {
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    final s = int.tryParse(parts[2]);
+    if (h == null || m == null || s == null) return null;
+    if (h < 0 || m < 0 || s < 0 || m >= 60 || s >= 60) return null;
+    return h * 3600 + m * 60 + s;
+  }
+  return null;
+}
+
 /// Pre-build off-screen rows for smoother fling on long lists.
-const _kScrollCacheExtent = 400.0;
+const _kScrollCacheExtent = 500.0;
 
 enum _MomentFilter { all, inProgress, ready }
 
@@ -45,6 +105,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   _MomentFilter _momentFilter = _MomentFilter.all;
   bool _selectionMode = false;
   final Set<String> _selectedSessionIds = {};
+  /// Prevents overlapping clipboard imports (resume + post-frame, etc.) from
+  /// creating duplicate sessions before [ClipboardPodcastService] marks the URL processed.
+  Future<void>? _clipboardImportInFlight;
 
   Future<void> _ingestSiriPendingSessions() async {
     final pending = await SiriService.getPendingSessions();
@@ -67,6 +130,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Future<void> _checkClipboardForPodcast({bool userInitiated = false}) async {
+    if (_clipboardImportInFlight != null) {
+      await _clipboardImportInFlight;
+      if (!userInitiated) {
+        // #region agent log
+        agentNdjsonLog(
+          hypothesisId: 'H_HOME_SKIP',
+          location: 'home_screen.dart:_checkClipboardForPodcast',
+          message: 'skipped duplicate clipboard import after await',
+          data: const {},
+          runId: 'post-dup-fix',
+        );
+        // #endregion
+        return;
+      }
+    }
+
+    final done = Completer<void>();
+    _clipboardImportInFlight = done.future;
+    try {
+      await _checkClipboardForPodcastImpl(userInitiated: userInitiated);
+    } finally {
+      if (!done.isCompleted) done.complete();
+      _clipboardImportInFlight = null;
+    }
+  }
+
+  Future<void> _checkClipboardForPodcastImpl({bool userInitiated = false}) async {
+    // #region agent log
+    agentNdjsonLog(
+      hypothesisId: 'H_HOME',
+      location: 'home_screen.dart:_checkClipboardForPodcastImpl',
+      message: 'clipboard check started',
+      data: {'userInitiated': userInitiated},
+      runId: 'dup-summary',
+    );
+    // #endregion
     final info = await ClipboardPodcastService.instance.checkClipboard();
     if (info == null || !mounted) {
       if (userInitiated && mounted) {
@@ -109,39 +208,88 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return;
     }
 
+    final episodeHint = <String, String>{};
+    if (info.itunesEpisodeId != null) {
+      episodeHint['itunesEpisodeId'] = info.itunesEpisodeId!;
+    }
+    if (info.itunesPodcastId != null) {
+      episodeHint['itunesPodcastId'] = info.itunesPodcastId!;
+    }
+    if (info.spotifyEpisodeId != null) {
+      episodeHint['spotifyEpisodeId'] = info.spotifyEpisodeId!;
+    }
+    if (info.source == 'gutenberg') {
+      episodeHint['gutenbergTextUrl'] = info.sourceUrl;
+    }
+
+    /// Audible / Gutenberg: chapter-based summaries — no wall-clock range sheet.
+    final skipRangeSheet =
+        info.source == 'audible' || info.source == 'gutenberg';
+
+    if (skipRangeSheet && mounted) {
+      final actions = ref.read(sessionActionsProvider);
+      // #region agent log
+      agentNdjsonLog(
+        hypothesisId: 'H_HOME',
+        location: 'home_screen.dart:_checkClipboardForPodcastImpl',
+        message: 'createAndSummarize skipRangeSheet branch',
+        data: {
+          'source': info.source,
+          'shareUrlLen': info.sourceUrl.length,
+        },
+        runId: 'dup-summary',
+      );
+      // #endregion
+      await actions.createAndSummarize(
+        title: info.episodeTitle,
+        artist: info.podcastName.isNotEmpty ? info.podcastName : 'Audible',
+        saveMethod: SaveMethod.notification,
+        startTimeSec: 0,
+        endTimeSec: null,
+        rangeLabel: null,
+        sourceApp: info.source,
+        sourceShareUrl: info.sourceUrl,
+        episodeHint: episodeHint.isEmpty ? null : episodeHint,
+        artworkUrl: info.artworkUrl,
+      );
+      if (mounted) await PSNHaptics.momentSaved();
+      if (mounted) {
+        final kind = info.source == 'gutenberg' ? 'E-book' : 'Audiobook';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Saved “${info.episodeTitle}” ($kind — pick a chapter on the summary).'),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
+    }
+
     final range = await _showClipboardRangePrompt(info);
     if (range != null && mounted) {
       final actions = ref.read(sessionActionsProvider);
-      // Pass iTunes/Spotify IDs so the pipeline can do an exact lookup
-      // instead of fuzzy text search.
-      final episodeHint = <String, String>{};
-      if (info.itunesEpisodeId != null) {
-        episodeHint['itunesEpisodeId'] = info.itunesEpisodeId!;
-      }
-      if (info.itunesPodcastId != null) {
-        episodeHint['itunesPodcastId'] = info.itunesPodcastId!;
-      }
-      if (info.spotifyEpisodeId != null) {
-        episodeHint['spotifyEpisodeId'] = info.spotifyEpisodeId!;
-      }
       await actions.createAndSummarize(
         title: info.episodeTitle,
-        artist: info.podcastName,
+        artist: info.podcastName.isNotEmpty
+            ? info.podcastName
+            : (info.source == 'spotify' ? 'Spotify' : info.podcastName),
         saveMethod: SaveMethod.notification,
         startTimeSec: range.start,
         endTimeSec: range.end,
         rangeLabel:
-            '${_formatRangeTimestamp(range.start)} – ${_formatRangeTimestamp(range.end)}',
+            '${_formatEpisodePosition(range.start)} – ${_formatEpisodePosition(range.end)}',
         sourceApp: info.source,
         sourceShareUrl: info.sourceUrl,
         episodeHint: episodeHint.isEmpty ? null : episodeHint,
+        artworkUrl: info.artworkUrl,
       );
       if (mounted) await PSNHaptics.momentSaved();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Saved "${info.episodeTitle}" (${_formatRangeTimestamp(range.start)} – ${_formatRangeTimestamp(range.end)})',
+              'Saved "${info.episodeTitle}" (${_formatEpisodePosition(range.start)} – ${_formatEpisodePosition(range.end)})',
             ),
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 3),
@@ -153,14 +301,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
-  int _clampNonNegative(int v) => v < 0 ? 0 : v;
-
-  String _formatRangeTimestamp(int seconds) {
-    final m = seconds ~/ 60;
-    final s = seconds % 60;
-    return '$m:${s.toString().padLeft(2, '0')}';
-  }
-
   Future<({int start, int end})?> _showClipboardRangePrompt(
     ClipboardPodcastInfo info,
   ) {
@@ -169,163 +309,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (ctx) {
-        var start = info.timestampSeconds;
-        var end = info.timestampSeconds + 60;
-        var errorText = '';
-
-        return StatefulBuilder(
-          builder: (ctx, setModalState) {
-            void validateAndSet({required bool fromStart}) {
-              start = _clampNonNegative(start);
-              end = _clampNonNegative(end);
-              if (end <= start) {
-                errorText = 'End time must be after start time.';
-              } else {
-                errorText = '';
-              }
-              setModalState(() {});
-            }
-
-            final sheetCs = Theme.of(ctx).colorScheme;
-            final sheetTt = Theme.of(ctx).textTheme;
-            return PSNBottomSheet(
-              title: 'Save moment range?',
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(Tokens.spaceSm + 6),
-                      decoration: BoxDecoration(
-                        color: sheetCs.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(Tokens.radiusMd),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 48,
-                            height: 48,
-                            decoration: BoxDecoration(
-                              color: sheetCs.primaryContainer,
-                              borderRadius: BorderRadius.circular(Tokens.radiusSm),
-                            ),
-                            child: Icon(
-                              Icons.podcasts_rounded,
-                              color: sheetCs.primary,
-                              size: 26,
-                            ),
-                          ),
-                          const SizedBox(width: Tokens.spaceSm + 4),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  info.episodeTitle,
-                                  style: sheetTt.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                if (info.podcastName.isNotEmpty) ...[
-                                  const SizedBox(height: 3),
-                                  Text(
-                                    info.podcastName,
-                                    style: sheetTt.bodyMedium?.copyWith(
-                                      color: sheetCs.onSurfaceVariant,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
-                                const SizedBox(height: 3),
-                                Text(
-                                  '${_formatRangeTimestamp(start)} – ${_formatRangeTimestamp(end)}',
-                                  style: sheetTt.bodyMedium?.copyWith(
-                                    color: sheetCs.primary,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: Tokens.spaceSm + 2),
-                    Text(
-                      'Choose start and end times (from clipboard start).',
-                      style: sheetTt.bodySmall?.copyWith(
-                        color: sheetCs.onSurfaceVariant,
-                      ),
-                    ),
-
-                    const SizedBox(height: 14),
-                    _RangePickerRow(
-                      label: 'Start',
-                      valueText: _formatRangeTimestamp(start),
-                      onMinus: () {
-                        start -= 15;
-                        validateAndSet(fromStart: true);
-                      },
-                      onPlus: () {
-                        start += 15;
-                        validateAndSet(fromStart: true);
-                      },
-                    ),
-                    _RangePickerRow(
-                      label: 'End',
-                      valueText: _formatRangeTimestamp(end),
-                      onMinus: () {
-                        end -= 15;
-                        validateAndSet(fromStart: false);
-                      },
-                      onPlus: () {
-                        end += 15;
-                        validateAndSet(fromStart: false);
-                      },
-                    ),
-
-                    if (errorText.isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        errorText,
-                        style: sheetTt.bodySmall?.copyWith(
-                          color: sheetCs.error,
-                        ),
-                      ),
-                    ],
-
-                    const SizedBox(height: Tokens.spaceLg),
-                    PSNButton(
-                      label: 'Save range',
-                      icon: const Icon(Icons.bookmark_rounded, size: 20),
-                      fullWidth: true,
-                      onTap: () {
-                        if (end <= start) {
-                          setModalState(() {
-                            errorText = 'End time must be after start time.';
-                          });
-                          return;
-                        }
-                        Navigator.of(ctx).pop((start: start, end: end));
-                      },
-                    ),
-                    const SizedBox(height: Tokens.spaceSm),
-                    PSNButton(
-                      label: 'Dismiss',
-                      variant: ButtonVariant.ghost,
-                      fullWidth: true,
-                      onTap: () => Navigator.of(ctx).pop(null),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
+        return Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom),
+          child: PSNBottomSheet(
+            title: null,
+            maxHeightFraction: 0.78,
+            child: _ClipboardRangeSheetBody(info: info),
+          ),
         );
       },
     );
@@ -455,19 +445,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   Widget _snipdHomeTheme(BuildContext context, Widget child) {
     final base = Theme.of(context);
+    if (base.brightness == Brightness.light) {
+      return child;
+    }
     return Theme(
       data: base.copyWith(
         scaffoldBackgroundColor: SnipdStyle.bgDeep,
         colorScheme: base.colorScheme.copyWith(
           surface: SnipdStyle.bgDeep,
-          onSurface: SnipdStyle.title,
-          onSurfaceVariant: SnipdStyle.meta,
-          primary: SnipdStyle.accent,
-          outline: SnipdStyle.borderSubtle,
+          onSurface: PodcastHomeColors.title(context),
+          onSurfaceVariant: PodcastHomeColors.meta(context),
+          primary: PodcastHomeColors.accent(context),
+          outline: PodcastHomeColors.borderSubtle(context),
         ),
         textTheme: base.textTheme.apply(
-          bodyColor: SnipdStyle.label,
-          displayColor: SnipdStyle.title,
+          bodyColor: PodcastHomeColors.label(context),
+          displayColor: PodcastHomeColors.title(context),
         ),
       ),
       child: child,
@@ -482,7 +475,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       loading: () => _snipdHomeTheme(
         context,
         Scaffold(
-          backgroundColor: SnipdStyle.bgDeep,
+          backgroundColor: PodcastHomeColors.scaffold(context),
           body: _HomeSkeleton(
             onMorePressed: () => _showHomeActionsMenu(context),
           ),
@@ -491,12 +484,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       error: (e, _) => _snipdHomeTheme(
         context,
         Scaffold(
-          backgroundColor: SnipdStyle.bgDeep,
+          backgroundColor: PodcastHomeColors.scaffold(context),
           body: Center(
             child: Text(
               'Error: $e',
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: SnipdStyle.meta,
+                    color: PodcastHomeColors.meta(context),
                   ),
             ),
           ),
@@ -506,7 +499,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         return _snipdHomeTheme(
           context,
           Scaffold(
-            backgroundColor: SnipdStyle.bgDeep,
+            backgroundColor: PodcastHomeColors.scaffold(context),
             body: Stack(
             children: [
               SafeArea(
@@ -698,7 +691,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 'No moments match this filter.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: SnipdStyle.meta,
+                      color: PodcastHomeColors.meta(context),
                     ),
               ),
             ),
@@ -728,14 +721,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     section,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.w700,
-                          color: SnipdStyle.label,
+                          color: PodcastHomeColors.label(context),
                           fontSize: 18,
                         ),
                   ),
                 ),
                 Icon(
                   Icons.chevron_right_rounded,
-                  color: SnipdStyle.meta.withValues(alpha: 0.6),
+                  color: PodcastHomeColors.meta(context).withValues(alpha: 0.6),
                   size: 22,
                 ),
               ],
@@ -745,6 +738,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       );
       slivers.add(
         SliverList.separated(
+          addAutomaticKeepAlives: false,
+          addRepaintBoundaries: true,
           itemBuilder: (ctx, index) {
             final session = items[index];
             final card = SessionCard(
@@ -763,7 +758,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             );
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
-              child: card,
+              child: RepaintBoundary(child: card),
             );
           },
           separatorBuilder: (_, _) => const SizedBox.shrink(),
@@ -925,7 +920,7 @@ class _SnipdHomeHeader extends StatelessWidget {
                         fontWeight: FontWeight.w800,
                         fontSize: 34,
                         height: 1.05,
-                        color: SnipdStyle.title,
+                        color: PodcastHomeColors.title(context),
                         letterSpacing: -0.5,
                       ),
                 ),
@@ -938,7 +933,7 @@ class _SnipdHomeHeader extends StatelessWidget {
                 icon: const Icon(Icons.search_rounded),
                 tooltip: 'Search',
                 style: IconButton.styleFrom(
-                  foregroundColor: SnipdStyle.label,
+                  foregroundColor: PodcastHomeColors.label(context),
                   minimumSize: const Size(Tokens.minTap, Tokens.minTap),
                 ),
               ),
@@ -951,7 +946,7 @@ class _SnipdHomeHeader extends StatelessWidget {
                 icon: const Icon(Icons.settings_outlined),
                 tooltip: 'Settings',
                 style: IconButton.styleFrom(
-                  foregroundColor: SnipdStyle.label,
+                  foregroundColor: PodcastHomeColors.label(context),
                   minimumSize: const Size(Tokens.minTap, Tokens.minTap),
                 ),
               ),
@@ -963,7 +958,7 @@ class _SnipdHomeHeader extends StatelessWidget {
                 icon: const Icon(Icons.more_horiz_rounded),
                 tooltip: 'More',
                 style: IconButton.styleFrom(
-                  foregroundColor: SnipdStyle.label,
+                  foregroundColor: PodcastHomeColors.label(context),
                   minimumSize: const Size(Tokens.minTap, Tokens.minTap),
                 ),
               ),
@@ -974,7 +969,7 @@ class _SnipdHomeHeader extends StatelessWidget {
             Text(
               'Your library has $totalCount moments',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: SnipdStyle.meta,
+                    color: PodcastHomeColors.meta(context),
                     fontSize: 13,
                   ),
               maxLines: 1,
@@ -1078,20 +1073,20 @@ class _SnipdQuickNavGrid extends StatelessWidget {
           },
           borderRadius: BorderRadius.circular(8),
           child: DecoratedBox(
-            decoration: SnipdStyle.quickNavCardDecoration.copyWith(
+            decoration: PodcastHomeColors.quickNavCardDecoration(context).copyWith(
               borderRadius: BorderRadius.circular(8),
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 0),
               child: Row(
                 children: [
-                  Icon(icon, color: SnipdStyle.accent, size: 13),
+                  Icon(icon, color: PodcastHomeColors.accent(context), size: 13),
                   const SizedBox(width: 5),
                   Expanded(
                     child: Text(
                       label,
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: SnipdStyle.label,
+                            color: PodcastHomeColors.label(context),
                             fontWeight: FontWeight.w600,
                             fontSize: 10,
                             height: 1.0,
@@ -1109,14 +1104,14 @@ class _SnipdQuickNavGrid extends StatelessWidget {
                           vertical: 1,
                         ),
                         decoration: BoxDecoration(
-                          color: SnipdStyle.accent.withValues(alpha: 0.2),
+                          color: PodcastHomeColors.accent(context).withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
                           badge,
                           style:
                               Theme.of(context).textTheme.labelSmall?.copyWith(
-                                    color: SnipdStyle.accent,
+                                    color: PodcastHomeColors.accent(context),
                                     fontWeight: FontWeight.w700,
                                     fontSize: 9,
                                     height: 1.0,
@@ -1160,6 +1155,9 @@ class _SnipdCoverStrip extends StatelessWidget {
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
+          addAutomaticKeepAlives: false,
+          addRepaintBoundaries: true,
+          cacheExtent: 500,
           itemCount: ordered.length,
           separatorBuilder: (_, _) => const SizedBox(width: 10),
           itemBuilder: (context, i) {
@@ -1230,8 +1228,8 @@ class _CreditsChipState extends State<_CreditsChip>
     final tt = Theme.of(context).textTheme;
     final color = widget.snipdChrome
         ? (empty
-            ? SnipdStyle.accent
-            : (low ? SnipdStyle.accent : SnipdStyle.label))
+            ? PodcastHomeColors.accent(context)
+            : (low ? PodcastHomeColors.accent(context) : PodcastHomeColors.label(context)))
         : (empty
             ? cs.error
             : (low ? cs.tertiary : cs.onSurfaceVariant));
@@ -1239,82 +1237,91 @@ class _CreditsChipState extends State<_CreditsChip>
     return Semantics(
       button: true,
       label: 'Credits, $remainingMinutes minutes remaining',
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(Tokens.radiusLg),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: Material(
-            color: widget.snipdChrome
-                ? SnipdStyle.card.withValues(alpha: 0.95)
-                : Colors.white.withValues(alpha: 0.06),
-            child: InkWell(
-              onTap: () {
-                higLightTap();
-                PSNBottomSheet.show(
-                  context: context,
-                  title: 'Credits',
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        '$remainingMinutes minutes left this month.',
-                        style: tt.bodyLarge,
-                      ),
-                      const SizedBox(height: Tokens.spaceMd),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(Tokens.radiusSm),
-                        child: LinearProgressIndicator(
-                          value: (remainingMinutes / 500).clamp(0.0, 1.0),
-                          minHeight: 8,
+      child: RepaintBoundary(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(Tokens.radiusLg),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Material(
+              color: widget.snipdChrome
+                  ? PodcastHomeColors.card(context).withValues(alpha: 0.95)
+                  : Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest
+                      .withValues(alpha: 0.55),
+              child: InkWell(
+                onTap: () {
+                  higLightTap();
+                  PSNBottomSheet.show(
+                    context: context,
+                    title: 'Credits',
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          '$remainingMinutes minutes left this month.',
+                          style: tt.bodyLarge,
                         ),
-                      ),
-                      const SizedBox(height: Tokens.spaceMd),
-                      PSNButton(
-                        label: 'Upgrade plan',
-                        fullWidth: true,
-                        onTap: () {
-                          Navigator.of(context).pop();
-                        },
-                      ),
-                    ],
+                        const SizedBox(height: Tokens.spaceMd),
+                        ClipRRect(
+                          borderRadius:
+                              BorderRadius.circular(Tokens.radiusSm),
+                          child: LinearProgressIndicator(
+                            value:
+                                (remainingMinutes / 500).clamp(0.0, 1.0),
+                            minHeight: 8,
+                          ),
+                        ),
+                        const SizedBox(height: Tokens.spaceMd),
+                        PSNButton(
+                          label: 'Upgrade plan',
+                          fullWidth: true,
+                          onTap: () {
+                            Navigator.of(context).pop();
+                          },
+                        ),
+                      ],
+                    ),
+                  );
+                },
+                borderRadius: BorderRadius.circular(Tokens.radiusLg),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: Tokens.spaceSm + 4,
+                    vertical: Tokens.spaceSm,
                   ),
-                );
-              },
-              borderRadius: BorderRadius.circular(Tokens.radiusLg),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Tokens.spaceSm + 4,
-                  vertical: Tokens.spaceSm,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (remainingMinutes < 10 && remainingMinutes > 0)
-                      AnimatedBuilder(
-                        animation: _pulse,
-                        builder: (context, child) => Opacity(
-                          opacity: 0.35 + 0.65 * _pulse.value,
-                          child: Container(
-                            width: 6,
-                            height: 6,
-                            margin: const EdgeInsets.only(right: 6),
-                            decoration: const BoxDecoration(
-                              color: Colors.redAccent,
-                              shape: BoxShape.circle,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (remainingMinutes < 10 && remainingMinutes > 0)
+                        AnimatedBuilder(
+                          animation: _pulse,
+                          builder: (context, child) => Opacity(
+                            opacity: 0.35 + 0.65 * _pulse.value,
+                            child: Container(
+                              width: 6,
+                              height: 6,
+                              margin: const EdgeInsets.only(right: 6),
+                              decoration: const BoxDecoration(
+                                color: Colors.redAccent,
+                                shape: BoxShape.circle,
+                              ),
                             ),
                           ),
                         ),
+                      Text(
+                        '$remainingMinutes min',
+                        style: tt.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w500,
+                          color: color,
+                          fontFeatures: const [
+                            FontFeature.tabularFigures(),
+                          ],
+                        ),
                       ),
-                    Text(
-                      '$remainingMinutes min',
-                      style: tt.labelLarge?.copyWith(
-                        fontWeight: FontWeight.w500,
-                        color: color,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1325,69 +1332,405 @@ class _CreditsChipState extends State<_CreditsChip>
   }
 }
 
-class _RangePickerRow extends StatelessWidget {
-  const _RangePickerRow({
-    required this.label,
-    required this.valueText,
-    required this.onMinus,
-    required this.onPlus,
+class _ClipboardRangeSheetBody extends StatefulWidget {
+  const _ClipboardRangeSheetBody({
+    required this.info,
   });
 
-  final String label;
-  final String valueText;
-  final VoidCallback onMinus;
-  final VoidCallback onPlus;
+  final ClipboardPodcastInfo info;
+
+  /// Jump size options in **minutes** (converted to seconds when nudging).
+  static const List<int> stepChoicesMinutes = [10, 20, 30, 40, 50];
+
+  @override
+  State<_ClipboardRangeSheetBody> createState() =>
+      _ClipboardRangeSheetBodyState();
+}
+
+class _ClipboardRangeSheetBodyState extends State<_ClipboardRangeSheetBody> {
+  late int _start;
+  late int _end;
+  late int _stepMinutes;
+  late final TextEditingController _startC;
+  late final TextEditingController _endC;
+
+  bool _startValid = true;
+  bool _endValid = true;
+
+  int get _stepSec => _stepMinutes * 60;
+
+  @override
+  void initState() {
+    super.initState();
+    _start = widget.info.timestampSeconds;
+    _end = widget.info.timestampSeconds + 90;
+    _stepMinutes = _ClipboardRangeSheetBody.stepChoicesMinutes.first;
+    _startC = TextEditingController(text: _formatEpisodePosition(_start));
+    _endC = TextEditingController(text: _formatEpisodePosition(_end));
+  }
+
+  @override
+  void dispose() {
+    _startC.dispose();
+    _endC.dispose();
+    super.dispose();
+  }
+
+  void _coerceRange() {
+    _start = _clampNonNegative(_start);
+    _end = _clampNonNegative(_end);
+    if (_end <= _start) {
+      _end = _start + _stepSec;
+    }
+  }
+
+  int _clampNonNegative(int v) => v < 0 ? 0 : v;
+
+  void _syncFieldsFromValues() {
+    _startC.text = _formatEpisodePosition(_start);
+    _endC.text = _formatEpisodePosition(_end);
+  }
+
+  void _bumpStart(int delta) {
+    higLightTap();
+    setState(() {
+      _start += delta;
+      _coerceRange();
+      _syncFieldsFromValues();
+      _startValid = true;
+      _endValid = true;
+    });
+  }
+
+  void _bumpEnd(int delta) {
+    higLightTap();
+    setState(() {
+      _end += delta;
+      _coerceRange();
+      _syncFieldsFromValues();
+      _startValid = true;
+      _endValid = true;
+    });
+  }
+
+  void _commitStartField() {
+    final a = _parseEpisodePositionInput(_startC.text);
+    setState(() {
+      if (a != null) {
+        _start = _clampNonNegative(a);
+        _startValid = true;
+        _coerceRange();
+        _syncFieldsFromValues();
+      } else {
+        _startValid = false;
+      }
+    });
+  }
+
+  void _commitEndField() {
+    final b = _parseEpisodePositionInput(_endC.text);
+    setState(() {
+      if (b != null) {
+        _end = _clampNonNegative(b);
+        _endValid = true;
+        _coerceRange();
+        _syncFieldsFromValues();
+      } else {
+        _endValid = false;
+      }
+    });
+  }
+
+  void _save() {
+    FocusScope.of(context).unfocus();
+    final a = _parseEpisodePositionInput(_startC.text);
+    final b = _parseEpisodePositionInput(_endC.text);
+    setState(() {
+      _startValid = a != null;
+      _endValid = b != null;
+      if (a != null) _start = _clampNonNegative(a);
+      if (b != null) _end = _clampNonNegative(b);
+    });
+    if (a == null || b == null) return;
+
+    setState(() {
+      _coerceRange();
+      if (_end <= _start) {
+        _end = _start + _stepSec;
+      }
+      _syncFieldsFromValues();
+    });
+    Navigator.of(context).pop((start: _start, end: _end));
+  }
+
+  static String _stepLabelMinutes(int min) => '$min min';
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
+    final accent = cs.primary;
+
+    final inputBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(Tokens.radiusSm),
+      borderSide: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+    );
+
+    Widget compactTimeRow({
+      required String label,
+      required TextEditingController controller,
+      required bool valid,
+      required VoidCallback onMinus,
+      required VoidCallback onPlus,
+      required VoidCallback onFieldDone,
+    }) {
+      final iconStyle = IconButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        padding: const EdgeInsets.all(4),
+        minimumSize: const Size(36, 36),
+        fixedSize: const Size(36, 36),
+        foregroundColor: accent,
+        backgroundColor: cs.surfaceContainerHighest,
+      );
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 64,
-            child: Text(
-              label,
-              style: tt.bodyMedium?.copyWith(
-                color: cs.onSurfaceVariant,
-                fontWeight: FontWeight.w500,
+            width: 42,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(
+                label,
+                style: tt.labelSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: cs.onSurfaceVariant,
+                ),
               ),
             ),
           ),
+          IconButton.filledTonal(
+            style: iconStyle,
+            onPressed: onMinus,
+            icon: const Icon(Icons.remove_rounded, size: 18),
+            tooltip: 'Earlier',
+          ),
           Expanded(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                IconButton(
-                  onPressed: () {
-                    higLightTap();
-                    onMinus();
-                  },
-                  icon: const Icon(Icons.remove_circle_outline_rounded),
-                  color: cs.primary,
-                  tooltip: 'Decrease $label',
-                ),
-                const SizedBox(width: Tokens.spaceSm + 2),
-                Text(
-                  valueText,
-                  style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(width: Tokens.spaceSm + 2),
-                IconButton(
-                  onPressed: () {
-                    higLightTap();
-                    onPlus();
-                  },
-                  icon: const Icon(Icons.add_circle_outline_rounded),
-                  color: cs.primary,
-                  tooltip: 'Increase $label',
-                ),
+            child: TextField(
+              controller: controller,
+              keyboardType: TextInputType.text,
+              autocorrect: false,
+              textInputAction: TextInputAction.done,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9:]')),
               ],
+              style: tt.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: cs.onSurface,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+              decoration: InputDecoration(
+                hintText: '5:30',
+                hintStyle: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                filled: true,
+                fillColor: cs.surfaceContainerLow,
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 8,
+                ),
+                border: inputBorder,
+                enabledBorder: inputBorder,
+                focusedBorder: inputBorder.copyWith(
+                  borderSide: BorderSide(color: accent, width: 1.5),
+                ),
+                errorBorder: inputBorder.copyWith(
+                  borderSide: BorderSide(color: cs.error),
+                ),
+                focusedErrorBorder: inputBorder.copyWith(
+                  borderSide: BorderSide(color: cs.error, width: 1.5),
+                ),
+                errorText: valid ? null : 'Use 5:30 or 1:05:30',
+                errorStyle: tt.labelSmall?.copyWith(
+                  color: cs.error,
+                  fontSize: 10,
+                ),
+                errorMaxLines: 1,
+              ),
+              maxLines: 1,
+              onChanged: (_) {
+                if (!valid) {
+                  setState(() {
+                    if (controller == _startC) {
+                      _startValid = true;
+                    } else {
+                      _endValid = true;
+                    }
+                  });
+                }
+              },
+              onEditingComplete: onFieldDone,
             ),
           ),
+          IconButton.filledTonal(
+            style: iconStyle,
+            onPressed: onPlus,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            tooltip: 'Later',
+          ),
         ],
+      );
+    }
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: cs.outlineVariant.withValues(alpha: 0.45),
+        ),
+        color: cs.surfaceContainerLow.withValues(alpha: 0.65),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Save moment',
+              style: tt.titleSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.2,
+                color: cs.onSurface,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              widget.info.episodeTitle,
+              style: tt.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                height: 1.2,
+                color: cs.onSurface,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            if (widget.info.podcastName.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                widget.info.podcastName,
+                style: tt.labelSmall?.copyWith(
+                  color: cs.onSurfaceVariant,
+                  height: 1.15,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+            const SizedBox(height: 8),
+            Text(
+              'Jump (min)',
+              style: tt.labelSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                for (final m in _ClipboardRangeSheetBody.stepChoicesMinutes)
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: FilterChip(
+                        label: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            _stepLabelMinutes(m),
+                            maxLines: 1,
+                            style: tt.labelSmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        selected: _stepMinutes == m,
+                        showCheckmark: false,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        padding: EdgeInsets.zero,
+                        labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                        onSelected: (_) {
+                          higLightTap();
+                          setState(() => _stepMinutes = m);
+                        },
+                        selectedColor: cs.primaryContainer,
+                        backgroundColor: cs.surfaceContainerHighest,
+                        side: BorderSide(
+                          color: _stepMinutes == m
+                              ? cs.primary.withValues(alpha: 0.35)
+                              : cs.outlineVariant.withValues(alpha: 0.4),
+                        ),
+                        labelStyle: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: _stepMinutes == m
+                              ? cs.onPrimaryContainer
+                              : cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            compactTimeRow(
+              label: 'Start',
+              controller: _startC,
+              valid: _startValid,
+              onMinus: () => _bumpStart(-_stepSec),
+              onPlus: () => _bumpStart(_stepSec),
+              onFieldDone: _commitStartField,
+            ),
+            const SizedBox(height: 6),
+            compactTimeRow(
+              label: 'End',
+              controller: _endC,
+              valid: _endValid,
+              onMinus: () => _bumpEnd(-_stepSec),
+              onPlus: () => _bumpEnd(_stepSec),
+              onFieldDone: _commitEndField,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Length: ${_humanClipDuration(
+                _parseEpisodePositionInput(_startC.text) ?? _start,
+                _parseEpisodePositionInput(_endC.text) ?? _end,
+              )}',
+              textAlign: TextAlign.center,
+              style: tt.labelSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 10),
+            PSNButton(
+              label: 'Save moment',
+              variant: ButtonVariant.primaryDark,
+              size: ButtonSize.md,
+              icon: const Icon(Icons.check_rounded, size: 20),
+              fullWidth: true,
+              onTap: _save,
+            ),
+            const SizedBox(height: 4),
+            PSNButton(
+              label: 'Cancel',
+              variant: ButtonVariant.ghost,
+              size: ButtonSize.sm,
+              fullWidth: true,
+              onTap: () => Navigator.of(context).pop(null),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1541,16 +1884,27 @@ class _MomentFilterBar extends StatelessWidget {
               duration: const Duration(milliseconds: 180),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
-                color: selected ? Colors.white : SnipdStyle.card,
+                color: selected
+                    ? (Theme.of(context).brightness == Brightness.dark
+                        ? Colors.white
+                        : Theme.of(context).colorScheme.primary)
+                    : PodcastHomeColors.card(context),
                 borderRadius: BorderRadius.circular(50),
                 border: selected
                     ? null
-                    : Border.all(color: SnipdStyle.borderSubtle, width: 1),
+                    : Border.all(
+                        color: PodcastHomeColors.borderSubtle(context),
+                        width: 1,
+                      ),
               ),
               child: Text(
                 _label(f),
                 style: tt.labelLarge?.copyWith(
-                  color: selected ? SnipdStyle.bgDeep : SnipdStyle.label,
+                  color: selected
+                      ? (Theme.of(context).brightness == Brightness.dark
+                          ? SnipdStyle.bgDeep
+                          : Theme.of(context).colorScheme.onPrimary)
+                      : PodcastHomeColors.label(context),
                   fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   fontSize: 13,
                 ),
@@ -1576,13 +1930,13 @@ class _MomentFilterBar extends StatelessWidget {
           tooltip: 'Filter',
           icon: Icon(
             Icons.tune_rounded,
-            color: SnipdStyle.label,
+            color: PodcastHomeColors.label(context),
             size: 22,
           ),
-          color: SnipdStyle.card,
+          color: PodcastHomeColors.card(context),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: SnipdStyle.borderSubtle),
+            side: BorderSide(color: PodcastHomeColors.borderSubtle(context)),
           ),
           onSelected: (f) {
             higLightTap();
@@ -1595,7 +1949,7 @@ class _MomentFilterBar extends StatelessWidget {
                   child: Text(
                     _label(f),
                     style: TextStyle(
-                      color: value == f ? SnipdStyle.accent : SnipdStyle.label,
+                      color: value == f ? PodcastHomeColors.accent(context) : PodcastHomeColors.label(context),
                       fontWeight:
                           value == f ? FontWeight.w700 : FontWeight.w400,
                     ),
@@ -1628,6 +1982,8 @@ class _HomeSkeleton extends StatelessWidget {
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: _kEdgePadding),
           sliver: SliverList.separated(
+            addAutomaticKeepAlives: false,
+            addRepaintBoundaries: false,
             itemBuilder: (_, _) => const _AppleSessionSkeletonCard(),
             separatorBuilder: (_, _) =>
                 const SizedBox(height: _kCardSpacing),

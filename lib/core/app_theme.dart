@@ -9,11 +9,14 @@ abstract final class AppTheme {
   /// iOS system blue (accent / tappable).
   static const Color iosSystemBlue = Color(0xFF007AFF);
 
+  /// Dark mode: deeper blue so primary actions match the rest of the UI (less neon).
+  static const Color darkPrimaryBlue = Color(0xFF2563EB);
+
   static ThemeData light({Color? seedColor}) =>
       _build(Brightness.light, seedColor: seedColor ?? iosSystemBlue);
 
   static ThemeData dark({Color? seedColor}) =>
-      _build(Brightness.dark, seedColor: seedColor ?? iosSystemBlue);
+      _build(Brightness.dark, seedColor: seedColor ?? darkPrimaryBlue);
 
   static ThemeData _build(Brightness brightness, {required Color seedColor}) {
     final colorScheme = ColorScheme.fromSeed(

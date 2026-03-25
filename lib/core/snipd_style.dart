@@ -8,7 +8,8 @@ abstract final class SnipdStyle {
   static const Color card = Color(0xFF0F1C30);
   static const Color label = Color(0xFFBDD4EE);
   static const Color meta = Color(0xFF5E82A8);
-  static const Color accent = Color(0xFF38BDF8);
+  /// Matches app primary (deeper blue — consistent with Material dark seed).
+  static const Color accent = Color(0xFF2563EB);
   static const Color title = Color(0xFFFFFFFF);
 
   static Color get borderSubtle =>

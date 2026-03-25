@@ -13,6 +13,7 @@ import '../database/session_dao.dart';
 import '../models/summary_style.dart';
 import '../debug/agent_ndjson_log.dart';
 import '../services/cloud_pipeline_service.dart';
+import '../services/gutenberg_book_service.dart';
 
 const _uuid = Uuid();
 
@@ -270,6 +271,20 @@ class SessionActions {
       tags: tags,
       sourceShareUrl: sourceShareUrl,
     );
+    // #region agent log
+    agentNdjsonLog(
+      hypothesisId: 'H_CREATE',
+      location: 'session_provider.dart:createAndSummarize',
+      message: 'new session + pipeline scheduled',
+      data: {
+        'id8': id.length >= 8 ? id.substring(0, 8) : id,
+        'sourceApp': sourceApp ?? '',
+        'shareUrlLen': sourceShareUrl?.length ?? 0,
+        'titleLen': title.length,
+      },
+      runId: 'dup-summary',
+    );
+    // #endregion
     unawaited(
       pipeline.processSession(id, style: resolvedStyle, episodeHint: episodeHint),
     );
@@ -288,5 +303,73 @@ class SessionActions {
   /// Manually retry a failed session.
   Future<void> retrySummary(String sessionId, {SummaryStyle? style}) {
     return pipeline.processSession(sessionId, style: style);
+  }
+
+  /// Jump to another Audible chapter start time and re-run summarization.
+  /// Updates via [dao.updateSession] (not a separate DAO helper) so incremental
+  /// hot restart always picks up changes — avoids stale kernel missing new methods.
+  Future<void> requeueAudibleChapterAndSummarize(
+    String sessionId,
+    int chapterStartSec, {
+    SummaryStyle? style,
+  }) async {
+    await dao.updateSession(
+      ListeningSessionsCompanion(
+        id: Value(sessionId),
+        startTimeSec: Value(chapterStartSec),
+        status: Value(SessionStatus.queued.name),
+        bullet1: const Value(null),
+        bullet2: const Value(null),
+        bullet3: const Value(null),
+        bullet4: const Value(null),
+        bullet5: const Value(null),
+        quote1: const Value(null),
+        quote2: const Value(null),
+        quote3: const Value(null),
+        errorMessage: const Value(null),
+        transcriptSource: const Value(null),
+        updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
+      ),
+    );
+    unawaited(pipeline.processSession(sessionId, style: style));
+  }
+
+  /// Re-run summarization for another Project Gutenberg chapter (0-based index).
+  Future<void> requeueGutenbergChapterAndSummarize(
+    String sessionId,
+    int chapterIndex0, {
+    SummaryStyle? style,
+  }) async {
+    final s = await dao.getSessionById(sessionId);
+    final raw = s?.chaptersJson;
+    if (raw == null || raw.isEmpty) return;
+    final payload = GutenbergBookService.parseStoredChaptersPayload(raw);
+    if (payload == null ||
+        chapterIndex0 < 0 ||
+        chapterIndex0 >= payload.chapters.length) {
+      return;
+    }
+    final map = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+    map['selectedChapterIndex'] = chapterIndex0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await dao.updateSession(
+      ListeningSessionsCompanion(
+        id: Value(sessionId),
+        chaptersJson: Value(jsonEncode(map)),
+        status: Value(SessionStatus.queued.name),
+        bullet1: const Value(null),
+        bullet2: const Value(null),
+        bullet3: const Value(null),
+        bullet4: const Value(null),
+        bullet5: const Value(null),
+        quote1: const Value(null),
+        quote2: const Value(null),
+        quote3: const Value(null),
+        errorMessage: const Value(null),
+        transcriptSource: const Value(null),
+        updatedAt: Value(now),
+      ),
+    );
+    unawaited(pipeline.processSession(sessionId, style: style));
   }
 }

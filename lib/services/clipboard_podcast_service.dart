@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+import '../debug/agent_ndjson_log.dart';
 import 'spotify_episode_service.dart';
 
 class ClipboardPodcastInfo {
@@ -16,6 +18,7 @@ class ClipboardPodcastInfo {
     this.itunesPodcastId,
     this.itunesEpisodeId,
     this.spotifyEpisodeId,
+    this.artworkUrl,
     this.supportsPipeline = true,
   });
 
@@ -24,6 +27,9 @@ class ClipboardPodcastInfo {
   final int timestampSeconds;
   final String sourceUrl;
   final String source;
+
+  /// Episode/show artwork when resolved (e.g. Spotify oEmbed thumbnail).
+  final String? artworkUrl;
 
   /// False for sources we detect but cannot transcribe (e.g. Audible DRM).
   final bool supportsPipeline;
@@ -56,6 +62,7 @@ class ClipboardPodcastService {
   static final instance = ClipboardPodcastService._();
 
   String? _lastProcessedUrl;
+  static int _clipboardCheckNesting = 0;
 
   /// Reads the system clipboard when the app is in the foreground.
   /// iOS + Android (Samsung, etc.): use after app resume or from an explicit
@@ -65,6 +72,21 @@ class ClipboardPodcastService {
     if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
       return null;
     }
+
+    _clipboardCheckNesting++;
+    final nest = _clipboardCheckNesting;
+    // #region agent log
+    agentNdjsonLog(
+      hypothesisId: 'H_CLIP',
+      location: 'clipboard_podcast_service.dart:checkClipboard',
+      message: 'checkClipboard entered',
+      data: {
+        'nesting': nest,
+        'os': Platform.operatingSystem,
+      },
+      runId: 'dup-summary',
+    );
+    // #endregion
 
     try {
       // Some Android builds need a beat after resume before clip is visible.
@@ -88,18 +110,50 @@ class ClipboardPodcastService {
         return null;
       }
 
-      final info = _tryParseApplePodcastsUrl(text) ??
-          _tryParseSpotifyUrl(text) ??
-          _tryParseSpotifyEpisodeFromFreeText(text) ??
-          await _tryParseAudibleUrl(text);
+      ClipboardPodcastInfo? info = _tryParseApplePodcastsUrl(text);
+      if (info != null) {
+        info = await _enrichApplePodcastsClipboardInfo(info);
+      } else {
+        final spot = _spotifyClipboardPartsFromUrl(text) ??
+            _spotifyClipboardPartsFromFreeText(text);
+        if (spot != null) {
+          info = await _clipboardInfoFromSpotifyParts(spot);
+        }
+      }
+      info ??= _tryParseGutenbergPlainTextUrl(text);
+      info ??= await _tryParseAudibleUrl(text);
 
       if (info != null) {
         _lastProcessedUrl = text;
       }
+      // #region agent log
+      agentNdjsonLog(
+        hypothesisId: 'H_CLIP',
+        location: 'clipboard_podcast_service.dart:checkClipboard',
+        message: 'checkClipboard exit',
+        data: {
+          'nesting': nest,
+          'hasInfo': info != null,
+          'expandedLen': text.length,
+        },
+        runId: 'dup-summary',
+      );
+      // #endregion
       return info;
     } catch (e) {
       debugPrint('[ClipboardPodcast] error: $e');
+      // #region agent log
+      agentNdjsonLog(
+        hypothesisId: 'H_CLIP',
+        location: 'clipboard_podcast_service.dart:checkClipboard',
+        message: 'checkClipboard error',
+        data: {'nesting': nest, 'errType': e.runtimeType.toString()},
+        runId: 'dup-summary',
+      );
+      // #endregion
       return null;
+    } finally {
+      _clipboardCheckNesting--;
     }
   }
 
@@ -204,27 +258,131 @@ class ClipboardPodcastService {
     );
   }
 
-  /// Share sheets often put extra text before/after the URL — still resolve episode.
-  static ClipboardPodcastInfo? _tryParseSpotifyEpisodeFromFreeText(String text) {
+  /// Fills missing episode/show titles from iTunes when the URL had `?i=` but weak slugs.
+  static Future<ClipboardPodcastInfo> _enrichApplePodcastsClipboardInfo(
+    ClipboardPodcastInfo info,
+  ) async {
+    if (info.source != 'apple_podcasts') return info;
+    final pod = info.itunesPodcastId?.trim();
+    final ep = info.itunesEpisodeId?.trim();
+    if (pod == null ||
+        pod.isEmpty ||
+        ep == null ||
+        ep.isEmpty ||
+        (info.episodeTitle.trim().isNotEmpty &&
+            info.podcastName.trim().isNotEmpty)) {
+      return info;
+    }
+    final row = await _lookupItunesEpisodeRow(pod, ep);
+    if (row == null) return info;
+    final apiTitle = (row['trackName'] as String?)?.trim() ?? '';
+    final apiShow = (row['collectionName'] as String?)?.trim() ?? '';
+    final art = row['artworkUrl600'] as String? ?? row['artworkUrl100'] as String?;
+    final artTrim = art?.trim();
+    return ClipboardPodcastInfo(
+      episodeTitle:
+          info.episodeTitle.trim().isNotEmpty ? info.episodeTitle : apiTitle,
+      podcastName:
+          info.podcastName.trim().isNotEmpty ? info.podcastName : apiShow,
+      timestampSeconds: info.timestampSeconds,
+      sourceUrl: info.sourceUrl,
+      source: info.source,
+      itunesPodcastId: info.itunesPodcastId,
+      itunesEpisodeId: info.itunesEpisodeId,
+      spotifyEpisodeId: info.spotifyEpisodeId,
+      artworkUrl: artTrim != null && artTrim.isNotEmpty ? artTrim : info.artworkUrl,
+      supportsPipeline: info.supportsPipeline,
+    );
+  }
+
+  static Future<Map<String, dynamic>?> _lookupItunesEpisodeRow(
+    String itunesPodcastId,
+    String itunesEpisodeId,
+  ) async {
+    try {
+      final url = Uri.parse(
+        'https://itunes.apple.com/lookup?id=$itunesPodcastId'
+        '&entity=podcastEpisode&limit=200',
+      );
+      final response = await http.get(url);
+      if (response.statusCode != 200) return null;
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final results = body['results'] as List<dynamic>? ?? [];
+      final targetId = int.tryParse(itunesEpisodeId);
+      for (final r in results) {
+        final m = r as Map<String, dynamic>;
+        if (m['wrapperType'] == 'podcastEpisode' && m['trackId'] == targetId) {
+          return m;
+        }
+      }
+      return null;
+    } catch (e) {
+      debugPrint('[ClipboardPodcast] iTunes lookup: $e');
+      return null;
+    }
+  }
+
+  /// Parsed Spotify episode id + timestamp + canonical-ish source URL for metadata fetch.
+  static ({String episodeId, int timestampSeconds, String sourceUrl})?
+      _spotifyClipboardPartsFromFreeText(String text) {
     final id = SpotifyEpisodeService.extractEpisodeIdFromText(text);
     if (id == null) return null;
-    // Share text may not be a single parseable URI — grab ?t= from anywhere.
     final tMatch = RegExp(r'[?&]t=(\d+)').firstMatch(text);
     final timestamp =
         tMatch != null ? int.tryParse(tMatch.group(1)!) ?? 0 : 0;
-    return ClipboardPodcastInfo(
-      episodeTitle: 'Spotify Episode',
-      podcastName: '',
+    return (
+      episodeId: id,
       timestampSeconds: timestamp,
       sourceUrl: text.trim(),
+    );
+  }
+
+  static Future<ClipboardPodcastInfo> _clipboardInfoFromSpotifyParts(
+    ({String episodeId, int timestampSeconds, String sourceUrl}) parts,
+  ) async {
+    final meta = await SpotifyEpisodeService.fetchEpisode(parts.episodeId);
+    final ep = meta?.episodeTitle.trim();
+    final show = meta?.showName.trim() ?? '';
+    final episodeTitle = (ep != null && ep.isNotEmpty) ? ep : 'Spotify episode';
+    final url = parts.sourceUrl.contains('open.spotify.com')
+        ? parts.sourceUrl
+        : 'https://open.spotify.com/episode/${parts.episodeId}';
+    final thumb = meta?.imageUrl?.trim();
+    return ClipboardPodcastInfo(
+      episodeTitle: episodeTitle,
+      podcastName: show,
+      timestampSeconds: parts.timestampSeconds,
+      sourceUrl: url,
       source: 'spotify',
-      spotifyEpisodeId: id,
+      spotifyEpisodeId: parts.episodeId,
+      artworkUrl: (thumb != null && thumb.isNotEmpty) ? thumb : null,
+    );
+  }
+
+  /// Plain UTF-8 / .txt Project Gutenberg download links (not HTML reader pages).
+  static ClipboardPodcastInfo? _tryParseGutenbergPlainTextUrl(String text) {
+    final uri = Uri.tryParse(text.trim());
+    if (uri == null || !uri.hasScheme) return null;
+    if (!uri.host.toLowerCase().contains('gutenberg.org')) return null;
+    final lowerPath = uri.path.toLowerCase();
+    final ok = lowerPath.contains('.txt') ||
+        lowerPath.contains('.utf-8') ||
+        lowerPath.contains('/cache/epub/');
+    if (!ok) return null;
+
+    return ClipboardPodcastInfo(
+      episodeTitle: 'Project Gutenberg eBook',
+      podcastName: 'Public domain',
+      timestampSeconds: 0,
+      sourceUrl: text.trim(),
+      source: 'gutenberg',
     );
   }
 
   /// Parses Spotify URLs like:
   /// https://open.spotify.com/episode/4rOoJ6Egrf8K2IrywzwOMk?t=757
-  static ClipboardPodcastInfo? _tryParseSpotifyUrl(String text) {
+  static ({String episodeId, int timestampSeconds, String sourceUrl})?
+      _spotifyClipboardPartsFromUrl(String text) {
     final uri = Uri.tryParse(text);
     if (uri == null) return null;
     if (!uri.host.contains('open.spotify.com')) return null;
@@ -233,7 +391,6 @@ class ClipboardPodcastService {
     final tParam = uri.queryParameters['t'];
     final timestamp = tParam != null ? int.tryParse(tParam) ?? 0 : 0;
 
-    // Extract the Spotify episode ID from /episode/{id}
     final epIdx = uri.pathSegments.indexOf('episode');
     if (epIdx < 0) return null;
     if (epIdx + 1 >= uri.pathSegments.length) return null;
@@ -242,13 +399,10 @@ class ClipboardPodcastService {
     final spotifyId = rawId.split('?').first.trim();
     if (spotifyId.isEmpty) return null;
 
-    return ClipboardPodcastInfo(
-      episodeTitle: 'Spotify Episode',
-      podcastName: '',
+    return (
+      episodeId: spotifyId,
       timestampSeconds: timestamp,
       sourceUrl: text,
-      source: 'spotify',
-      spotifyEpisodeId: spotifyId,
     );
   }
 
@@ -328,8 +482,9 @@ class ClipboardPodcastService {
     }
     if (title.isEmpty) title = 'Audible Episode';
 
-    final tParam = uri.queryParameters['t'];
-    final timestamp = tParam != null ? int.tryParse(tParam) ?? 0 : 0;
+    // Audiobook summaries are driven by **catalog chapter** (Audnexus), not share-link
+    // playback time — user picks a chapter on the summary screen.
+    const timestamp = 0;
 
     return ClipboardPodcastInfo(
       episodeTitle: title,

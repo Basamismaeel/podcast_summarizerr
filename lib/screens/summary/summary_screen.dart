@@ -1,4 +1,6 @@
-import 'dart:async' show Future, Timer, unawaited;
+import 'dart:async'
+    show Future, Timer, scheduleMicrotask, unawaited;
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -14,22 +16,188 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/content_chat_prompts.dart';
 import '../../core/haptics.dart';
 import '../../core/moments_stats_service.dart';
+import '../../core/session_display_kind.dart';
 import '../../core/summary_export.dart';
+import '../../core/summary_theme_colors.dart';
+import '../../core/summary_text_display.dart';
 import '../../core/tokens.dart';
 import '../../database/database.dart';
 import '../../models/summary_style.dart';
 import '../../providers/session_provider.dart';
+import '../../services/audible_book_service.dart';
+import '../../services/gutenberg_book_service.dart';
 import '../../services/podcast_player_links.dart';
 import '../../widgets/confirm_delete_session_sheet.dart';
+import '../../widgets/content_chat.dart';
 import '../../widgets/liquid_loader.dart';
+import '../../widgets/summary_listen_row.dart';
 import '../../widgets/typewrite_text.dart';
 import 'widgets/share_card_generator.dart';
 
 final _kBulletTsRe =
     RegExp(r'^\[(\d{1,4}:\d{2}(?::\d{2})?)\]\s*');
+
+// #region agent log
+const _kAgentLogPath =
+    '/Users/basamismaeel/podcast_Summerizer/.cursor/debug-1f97d9.log';
+
+void _agentLog(
+  String hypothesisId,
+  String location,
+  String message, [
+  Map<String, Object?>? data,
+]) {
+  try {
+    final payload = <String, Object?>{
+      'sessionId': '1f97d9',
+      'hypothesisId': hypothesisId,
+      'location': location,
+      'message': message,
+      'data': data ?? <String, Object?>{},
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+    final line = jsonEncode(payload);
+    debugPrint('[agent] $line');
+    // Avoid sync disk I/O on scroll/gesture paths (was janking frames).
+    scheduleMicrotask(() {
+      try {
+        File(_kAgentLogPath).writeAsStringSync('$line\n', mode: FileMode.append);
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+
+// #endregion
+
+/// Comfortable reading measure for summary body (phones fill width; tablets cap).
+const double _kSummaryContentMaxWidth = 560;
+
+const Color _kSummaryCyan = Color(0xFF00D4FF);
+const Color _kApplePodcastsPurple = Color(0xFFB150E2);
+
+/// `[MM:SS]` / `[H:MM:SS]` label → seconds (for player deep links).
+int? _parseTimestampLabelToSec(String at) {
+  final p = at.split(':');
+  if (p.length == 2) {
+    final m = int.tryParse(p[0].trim());
+    final s = int.tryParse(p[1].trim());
+    if (m != null && s != null) return m * 60 + s;
+  } else if (p.length == 3) {
+    final h = int.tryParse(p[0].trim());
+    final m = int.tryParse(p[1].trim());
+    final s = int.tryParse(p[2].trim());
+    if (h != null && m != null && s != null) return h * 3600 + m * 60 + s;
+  }
+  return null;
+}
+
+Future<void> _shareInsightCard(BuildContext context, String text) async {
+  final t = text.trim();
+  if (t.isEmpty) return;
+  try {
+    final box = context.findRenderObject() as RenderBox?;
+    final origin =
+        box == null ? null : box.localToGlobal(Offset.zero) & box.size;
+    final res = await Share.share(t, sharePositionOrigin: origin);
+    if (res.status == ShareResultStatus.unavailable) {
+      await Clipboard.setData(ClipboardData(text: t));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Copied!'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  } catch (_) {
+    await Clipboard.setData(ClipboardData(text: t));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Copied!'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+}
+
+Future<void> _openListenUrlAtTimestamp(
+  BuildContext context,
+  ListeningSession session,
+  String? at,
+) async {
+  final sec = at != null ? _parseTimestampLabelToSec(at) : null;
+  if (sec == null) return;
+  final url = _listenUrlForPlayer(session);
+  if (url == null || url.trim().isEmpty) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No podcast link is saved for this moment — add a Spotify or Apple Podcasts URL when saving.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+    return;
+  }
+  var ok = false;
+  if (PodcastPlayerLinks.looksLikeApplePodcasts(url)) {
+    ok = await PodcastPlayerLinks.openApplePodcastsAt(url, sec);
+  } else if (PodcastPlayerLinks.looksLikeSpotify(url)) {
+    ok = await PodcastPlayerLinks.openSpotifyAt(url, sec);
+  } else {
+    final uri = Uri.tryParse(url.trim());
+    if (uri != null) {
+      final q = Map<String, String>.from(uri.queryParameters);
+      q['t'] = '$sec';
+      try {
+        ok = await launchUrl(
+          uri.replace(queryParameters: q),
+          mode: LaunchMode.externalApplication,
+        );
+      } catch (_) {
+        ok = false;
+      }
+    }
+  }
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Could not open the player at this time.'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+}
+
+String _summaryPlainTextForListen(List<String> bullets, List<String> quotes) {
+  final b = bullets.map((x) => _splitEpisodeTimestamp(x).body).join(' ');
+  final q = quotes.join(' ');
+  return [b, q].where((s) => s.trim().isNotEmpty).join(' ');
+}
+
+String _bookSectionSharePlain(String? title, int sectionIndex, String body) {
+  final head = (title != null && title.trim().isNotEmpty)
+      ? title.trim()
+      : 'Section $sectionIndex';
+  return '$head\n\n$body';
+}
+
+TextStyle _summarySectionLabelStyle(BuildContext context) => TextStyle(
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.4,
+      color: SummaryThemeColors.textMuted(context),
+    );
 
 /// Leading `[MM:SS]` / `[H:MM:SS]` from pipeline (episode position).
 ({String? at, String body}) _splitEpisodeTimestamp(String raw) {
@@ -37,6 +205,24 @@ final _kBulletTsRe =
   final m = _kBulletTsRe.firstMatch(t);
   if (m == null) return (at: null, body: t);
   return (at: m.group(1), body: t.substring(m.end).trimLeft());
+}
+
+String _summaryBulletRailLabel(String bullet, int index, bool structured) {
+  final parts = _splitEpisodeTimestamp(bullet);
+  if (structured) {
+    final p = parseSummaryBulletSections(parts.body);
+    final t = p.title?.trim();
+    if (t != null && t.isNotEmpty) {
+      if (t.length > 28) return '${t.substring(0, 26)}…';
+      return t;
+    }
+    final line = parts.body.split(RegExp(r'\n')).first.trim();
+    final plain = stripMarkdownForDisplay(line);
+    if (plain.length > 22) return '${plain.substring(0, 20)}…';
+    return plain.isEmpty ? '${index + 1}' : plain;
+  }
+  // Podcast episodes: keep tabs tiny — full text stays in the panel below.
+  return '${index + 1}';
 }
 
 /// Small pill: “seek to this moment” cue next to summary text.
@@ -48,14 +234,23 @@ class _EpisodeTimestampPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cs = Theme.of(context).colorScheme;
+    final fg = isDark ? Colors.white.withValues(alpha: 0.9) : cs.onSurface;
     return Semantics(
       label: 'Episode timestamp $at',
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.38),
+          color: isDark
+              ? Colors.black.withValues(alpha: 0.38)
+              : cs.surfaceContainerHighest.withValues(alpha: 0.9),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+          border: Border.all(
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.18)
+                : cs.outlineVariant,
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -63,7 +258,7 @@ class _EpisodeTimestampPill extends StatelessWidget {
             Icon(
               Icons.schedule,
               size: 14,
-              color: Colors.white.withValues(alpha: 0.88),
+              color: fg,
             ),
             const SizedBox(width: 6),
             Text(
@@ -71,12 +266,49 @@ class _EpisodeTimestampPill extends StatelessWidget {
               style: GoogleFonts.dmMono(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.white.withValues(alpha: 0.92),
+                color: fg,
                 letterSpacing: 0.3,
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Timestamp pill that jumps to this position in Apple Podcasts / Spotify when possible.
+class _TappableEpisodeTimestampPill extends StatefulWidget {
+  const _TappableEpisodeTimestampPill({
+    required this.at,
+    required this.session,
+  });
+
+  final String at;
+  final ListeningSession session;
+
+  @override
+  State<_TappableEpisodeTimestampPill> createState() =>
+      _TappableEpisodeTimestampPillState();
+}
+
+class _TappableEpisodeTimestampPillState
+    extends State<_TappableEpisodeTimestampPill> {
+  Future<void> _onTap() async {
+    higLightTap();
+    await _openListenUrlAtTimestamp(context, widget.session, widget.at);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: _onTap,
+        borderRadius: BorderRadius.circular(20),
+        splashColor: Colors.white.withValues(alpha: 0.12),
+        highlightColor: Colors.white.withValues(alpha: 0.06),
+        child: _EpisodeTimestampPill(at: widget.at),
       ),
     );
   }
@@ -96,8 +328,82 @@ String _summaryFmtTimestamp(int totalSeconds) {
   return '$m:${s.toString().padLeft(2, '0')}';
 }
 
+String _chapterHeroSubtitle(ListeningSession session) {
+  final ap = AudibleBookService.parseChaptersPayload(session.chaptersJson);
+  if (ap != null && ap.chapters.isNotEmpty) {
+    final ch = AudibleBookService.chapterForTimestamp(
+      ap.chapters,
+      session.startTimeSec,
+    );
+    final t = ch['title'] as String?;
+    if (t != null && t.trim().isNotEmpty) return t.trim();
+  }
+  final gp =
+      GutenbergBookService.parseStoredChaptersPayload(session.chaptersJson);
+  if (gp != null && gp.chapters.isNotEmpty) {
+    final i = gp.selectedChapterIndex.clamp(0, gp.chapters.length - 1);
+    final t = gp.chapters[i].chapterTitle.trim();
+    if (t.isNotEmpty) return t;
+  }
+  return 'Chapter summary';
+}
+
 /// User-facing explanation of which audio window the summary reflects.
 String _summaryTrustLine(ListeningSession s) {
+  final gutenbergPayload =
+      GutenbergBookService.parseStoredChaptersPayload(s.chaptersJson);
+  final isGutenberg = s.transcriptSource == 'gutenberg' ||
+      gutenbergPayload != null;
+  if (isGutenberg) {
+    var chapterName = 'the selected chapter';
+    if (gutenbergPayload != null && gutenbergPayload.chapters.isNotEmpty) {
+      final i = gutenbergPayload.selectedChapterIndex
+          .clamp(0, gutenbergPayload.chapters.length - 1);
+      final t = gutenbergPayload.chapters[i].chapterTitle.trim();
+      if (t.isNotEmpty) chapterName = t;
+    }
+    return 'This summary follows “$chapterName” from your Project Gutenberg '
+        'chapter list. Gemini summarizes the full text of that chapter only.';
+  }
+
+  final audiblePayload = AudibleBookService.parseChaptersPayload(s.chaptersJson);
+  if (s.transcriptSource == 'audible_pg') {
+    var chapterName = 'the selected catalog chapter';
+    if (audiblePayload != null && audiblePayload.chapters.isNotEmpty) {
+      final ch = AudibleBookService.chapterForTimestamp(
+        audiblePayload.chapters,
+        s.startTimeSec,
+      );
+      final t = ch['title'] as String?;
+      if (t != null && t.trim().isNotEmpty) chapterName = t.trim();
+    }
+    return 'This summary uses full chapter text from Project Gutenberg '
+        '(auto-matched to this audiobook). Your chapter is “$chapterName” from '
+        'the Audible catalog; the written text may differ slightly from what you hear.';
+  }
+
+  if (s.transcriptSource == 'audible_openlibrary') {
+    return "Summary based on full chapter text from Open Library's free "
+        'edition. Text may differ slightly from your audiobook\'s narration.';
+  }
+
+  final isAudible = s.transcriptSource == 'audible' ||
+      audiblePayload != null ||
+      (s.sourceApp?.toLowerCase() == 'audible');
+  if (isAudible) {
+    var chapterName = 'the selected catalog chapter';
+    if (audiblePayload != null && audiblePayload.chapters.isNotEmpty) {
+      final ch = AudibleBookService.chapterForTimestamp(
+        audiblePayload.chapters,
+        s.startTimeSec,
+      );
+      final t = ch['title'] as String?;
+      if (t != null && t.trim().isNotEmpty) chapterName = t.trim();
+    }
+    return 'This summary follows “$chapterName” (retailer chapter list). '
+        'It uses store text and metadata — not a transcript of the audiobook.';
+  }
+
   final end = s.endTimeSec;
   if (end != null && end > s.startTimeSec) {
     return 'This summary is based on ${_summaryFmtTimestamp(s.startTimeSec)}–${_summaryFmtTimestamp(end)} in “${s.title}” (${s.artist}).';
@@ -120,29 +426,687 @@ String? _listenUrlForPlayer(ListeningSession s) {
   return null;
 }
 
-TextStyle _summaryBulletStyle(int index) {
-  if (index <= 1) {
-    return const TextStyle(
-      fontSize: 16,
-      fontWeight: FontWeight.w600,
-      color: Colors.white,
-      height: 1.65,
-    );
-  }
-  if (index == 2) {
-    return TextStyle(
-      fontSize: 15,
-      fontWeight: FontWeight.w500,
-      color: Colors.white.withValues(alpha: 0.9),
-      height: 1.65,
-    );
-  }
+TextStyle _summaryBulletStyle(BuildContext context, int index) {
+  final lead = index <= 1;
+  final c = SummaryThemeColors.onBody(context);
   return TextStyle(
-    fontSize: 14,
-    fontWeight: FontWeight.w400,
-    color: Colors.white.withValues(alpha: 0.8),
-    height: 1.65,
+    fontSize: lead ? 18 : 17,
+    fontWeight: lead ? FontWeight.w500 : FontWeight.w400,
+    color: c.withValues(alpha: lead ? 1 : 0.96),
+    height: 1.7,
   );
+}
+
+/// Podcast: Points · Quotes · Chat · Tags · More. Audiobook: Points · Chat · Tags.
+class _AdaptiveSummaryTabs extends StatelessWidget {
+  const _AdaptiveSummaryTabs({
+    required this.selectedIndex,
+    required this.accent,
+    required this.onSelect,
+    required this.audiobookMode,
+  });
+
+  final int selectedIndex;
+  final Color accent;
+  final ValueChanged<int> onSelect;
+
+  /// Chapter-based session (Audible / Gutenberg): hide Quotes & More.
+  final bool audiobookMode;
+
+  static const _podcastLabels = ['Points', 'Quotes', 'Chat', 'Tags', 'More'];
+  static const _bookLabels = ['Points', 'Chat', 'Tags'];
+
+  @override
+  Widget build(BuildContext context) {
+    final labels = audiobookMode ? _bookLabels : _podcastLabels;
+    final n = labels.length;
+    return Row(
+      children: List.generate(n, (i) {
+        final on = selectedIndex == i;
+        return Expanded(
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () {
+                // #region agent log
+                _agentLog('H1', 'AdaptiveSummaryTabs:InkWell', 'tab tap', {
+                  'tabIndex': i,
+                  'label': labels[i],
+                });
+                // #endregion
+                higLightTap();
+                onSelect(i);
+              },
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 10, horizontal: 2),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '${i + 1}',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: on
+                            ? accent
+                            : SummaryThemeColors.onBodySoft(context),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      labels[i],
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.15,
+                        color: on
+                            ? accent.withValues(alpha: 0.95)
+                            : SummaryThemeColors.textMuted(context),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      height: 2,
+                      decoration: BoxDecoration(
+                        color: on ? accent : Colors.transparent,
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _QuotesTabPanel extends StatelessWidget {
+  const _QuotesTabPanel({
+    required this.quotes,
+    required this.unlocked,
+    required this.session,
+    required this.accent,
+  });
+
+  final List<String> quotes;
+  final bool unlocked;
+  final ListeningSession session;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!unlocked) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 32),
+        child: Text(
+          'Key quotes appear when the summary finishes.',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 14,
+            height: 1.45,
+            color: SummaryThemeColors.onBodySoft(context),
+          ),
+        ),
+      );
+    }
+    if (quotes.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 32),
+        child: Text(
+          'No key quotes for this summary.',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 14,
+            height: 1.45,
+            color: SummaryThemeColors.onBodySoft(context),
+          ),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Key quotes',
+          style: _summarySectionLabelStyle(context),
+        ),
+        const SizedBox(height: 14),
+        ListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          addAutomaticKeepAlives: false,
+          addRepaintBoundaries: false,
+          cacheExtent: 500,
+          itemCount: quotes.length,
+          itemBuilder: (context, i) {
+            final q = quotes[i];
+            return TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: 1),
+              duration: const Duration(milliseconds: 450),
+              curve: Curves.easeOutCubic,
+              builder: (context, t, child) => Opacity(
+                opacity: t,
+                child: Transform.translate(
+                  offset: Offset(0, 8 * (1 - t)),
+                  child: child,
+                ),
+              ),
+              child: _MagazineQuoteCard(
+                text: q,
+                accent: accent,
+                session: session,
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+/// Chapters + transcript hints + Open in Spotify / Apple Podcasts (always above tabs).
+class _SummaryChaptersAndPlayerLinks extends ConsumerWidget {
+  const _SummaryChaptersAndPlayerLinks({
+    required this.session,
+    required this.status,
+    required this.style,
+    required this.sessionId,
+  });
+
+  final ListeningSession session;
+  final SessionStatus status;
+  final SummaryStyle? style;
+  final String sessionId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final accent = Theme.of(context).colorScheme.primary;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (AudibleBookService.parseChaptersPayload(session.chaptersJson) !=
+            null) ...[
+          Builder(
+            builder: (context) {
+              final payload = AudibleBookService.parseChaptersPayload(
+                session.chaptersJson,
+              )!;
+              if (payload.chapters.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              final current = AudibleBookService.chapterForTimestamp(
+                payload.chapters,
+                session.startTimeSec,
+              );
+              final currentStart = AudibleBookService.chapterStartSec(current);
+              return _CollapsibleChapterTray(
+                leadingIcon: Icons.headphones_rounded,
+                accent: accent,
+                title: 'Chapters',
+                subtitle:
+                    '${payload.chapters.length} in this title · expand to pick another',
+                expandedBody: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: payload.chapters.map((c) {
+                    final start = AudibleBookService.chapterStartSec(c);
+                    final title = c['title'] as String? ?? 'Chapter';
+                    final isHere = start == currentStart;
+                    final busy = status == SessionStatus.summarizing ||
+                        status == SessionStatus.queued;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Material(
+                        color: isHere
+                            ? accent.withValues(alpha: 0.12)
+                            : Colors.white.withValues(alpha: 0.04),
+                        borderRadius: BorderRadius.circular(12),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: busy
+                              ? null
+                              : () async {
+                                  if (start == session.startTimeSec) return;
+                                  higLightTap();
+                                  await ref
+                                      .read(sessionActionsProvider)
+                                      .requeueAudibleChapterAndSummarize(
+                                        sessionId,
+                                        start,
+                                        style: style,
+                                      );
+                                  ref.invalidate(sessionByIdProvider(sessionId));
+                                },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 12,
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 3,
+                                  height: 36,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(2),
+                                    color: isHere
+                                        ? accent
+                                        : Colors.white
+                                            .withValues(alpha: 0.08),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    title,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      height: 1.25,
+                                      fontWeight: isHere
+                                          ? FontWeight.w700
+                                          : FontWeight.w500,
+                                      color: Colors.white.withValues(
+                                        alpha: isHere ? 0.96 : 0.72,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                if (isHere)
+                                  Text(
+                                    'Now',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: accent.withValues(alpha: 0.95),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              );
+            },
+          ),
+        ],
+        if (GutenbergBookService.parseStoredChaptersPayload(
+              session.chaptersJson,
+            ) !=
+            null) ...[
+          Builder(
+            builder: (context) {
+              final gp = GutenbergBookService.parseStoredChaptersPayload(
+                session.chaptersJson,
+              )!;
+              return _CollapsibleChapterTray(
+                leadingIcon: Icons.auto_stories_rounded,
+                accent: accent,
+                title: 'Chapters',
+                subtitle:
+                    '${gp.chapters.length} in this book · expand to pick another',
+                expandedBody: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: gp.chapters.asMap().entries.map((e) {
+                    final i = e.key;
+                    final row = e.value;
+                    final title = row.chapterTitle.isNotEmpty
+                        ? row.chapterTitle
+                        : 'Chapter ${row.chapterNumber}';
+                    final isHere = i == gp.selectedChapterIndex;
+                    final busy = status == SessionStatus.summarizing ||
+                        status == SessionStatus.queued;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Material(
+                        color: isHere
+                            ? accent.withValues(alpha: 0.12)
+                            : Colors.white.withValues(alpha: 0.04),
+                        borderRadius: BorderRadius.circular(12),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: busy
+                              ? null
+                              : () async {
+                                  if (i == gp.selectedChapterIndex) return;
+                                  higLightTap();
+                                  await ref
+                                      .read(sessionActionsProvider)
+                                      .requeueGutenbergChapterAndSummarize(
+                                        sessionId,
+                                        i,
+                                        style: style,
+                                      );
+                                  ref.invalidate(sessionByIdProvider(sessionId));
+                                },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 12,
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 3,
+                                  height: 36,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(2),
+                                    color: isHere
+                                        ? accent
+                                        : Colors.white
+                                            .withValues(alpha: 0.08),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    title,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      height: 1.25,
+                                      fontWeight: isHere
+                                          ? FontWeight.w700
+                                          : FontWeight.w500,
+                                      color: Colors.white.withValues(
+                                        alpha: isHere ? 0.96 : 0.72,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                if (isHere)
+                                  Text(
+                                    'Now',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: accent.withValues(alpha: 0.95),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              );
+            },
+          ),
+        ],
+        if (session.transcriptSource == 'taddy')
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.amber.withValues(alpha: 0.35),
+                  ),
+                ),
+                child: const Text(
+                  'Timestamps may be approximate (plain transcript)',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.white70,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        if (session.transcriptSource == 'audible' ||
+            session.transcriptSource == 'audible_pg' ||
+            session.transcriptSource == 'audible_openlibrary')
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.deepPurple.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.deepPurple.withValues(alpha: 0.4),
+                  ),
+                ),
+                child: const Text(
+                  'Audible: Pick a chapter above; summary uses that catalog title + store blurb — not spoken audio',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.white70,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        if (session.transcriptSource == 'gutenberg' ||
+            GutenbergBookService.parseStoredChaptersPayload(
+                  session.chaptersJson,
+                ) !=
+                null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.teal.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.teal.withValues(alpha: 0.45),
+                  ),
+                ),
+                child: const Text(
+                  'Gutenberg: Chapter title is from the book text split — tap another chapter to re-summarize',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.white70,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (PodcastPlayerLinks.looksLikeSpotify(
+                _listenUrlForPlayer(session)))
+              OutlinedButton.icon(
+                onPressed: () {
+                  unawaited(
+                    PodcastPlayerLinks.openSpotifyAt(
+                      _listenUrlForPlayer(session),
+                      session.startTimeSec,
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.open_in_new,
+                    size: 16, color: Colors.white70),
+                label: const Text(
+                  'Open in Spotify',
+                  style: TextStyle(color: Colors.white70),
+                ),
+              ),
+            if (PodcastPlayerLinks.looksLikeApplePodcasts(
+                _listenUrlForPlayer(session)))
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: _kApplePodcastsPurple.withValues(alpha: 0.42),
+                      blurRadius: 18,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _kApplePodcastsPurple,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: () async {
+                    higLightTap();
+                    final ok = await PodcastPlayerLinks.openApplePodcasts(
+                      _listenUrlForPlayer(session),
+                    );
+                    if (!context.mounted) return;
+                    if (!ok) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Could not open Podcasts. '
+                            'Install the Apple Podcasts app, or open the link in Safari.',
+                          ),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(
+                    Icons.podcasts,
+                    size: 22,
+                    color: Colors.white,
+                  ),
+                  label: const Text(
+                    'Open in Apple Podcasts',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        if (!PodcastPlayerLinks.looksLikeSpotify(
+                _listenUrlForPlayer(session)) &&
+            !PodcastPlayerLinks.looksLikeApplePodcasts(
+                _listenUrlForPlayer(session)))
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              'Open in Spotify / Apple Podcasts appears when you save using a podcast link from Home, or when we can derive a show link.',
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.35,
+                color: Colors.white.withValues(alpha: 0.45),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _SummaryMoreTab extends ConsumerWidget {
+  const _SummaryMoreTab({
+    required this.session,
+    required this.style,
+    required this.bullets,
+    required this.quotes,
+    required this.wc,
+    required this.readMin,
+  });
+
+  final ListeningSession session;
+  final SummaryStyle? style;
+  final List<String> bullets;
+  final List<String> quotes;
+  final int wc;
+  final int readMin;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (style != null) ...[
+          const SizedBox(height: Tokens.spaceSm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () async {
+                higLightTap();
+                await ref.read(sessionActionsProvider).rememberSummaryStyleForShow(
+                      session.artist,
+                      style!,
+                    );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        'Future saves from “${session.artist}” will use ${style!.label}.',
+                      ),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+              },
+              icon: const Icon(
+                Icons.bookmark_added_outlined,
+                size: 18,
+                color: Colors.white70,
+              ),
+              label: Text(
+                'Always use ${style!.label} for this show',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 20),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Text(
+                '$wc words · ~$readMin min read',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.4,
+                  color: SummaryThemeColors.textMuted(context),
+                ),
+              ),
+            ),
+            SummaryListenControl(
+              plainText: _summaryPlainTextForListen(bullets, quotes),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 }
 
 class SummaryScreen extends ConsumerStatefulWidget {
@@ -160,29 +1124,134 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
   SessionStatus? _lastHeardStatus;
   late AnimationController _liquidProgress;
   late ConfettiController _confetti;
-  final TextEditingController _askController = TextEditingController();
   OverlayEntry? _firstSummaryOverlay;
   bool _quotesUnlocked = false;
+  int _summaryMainTab = 0;
+  late final ValueNotifier<bool> _mainBottomFadeVisible;
+  int _lastBottomFadeEvalMs = 0;
+  late final ScrollController _summaryMainScroll;
 
   @override
   void initState() {
     super.initState();
+    _mainBottomFadeVisible = ValueNotifier<bool>(true);
+    _summaryMainScroll = ScrollController(
+      onAttach: (pos) {
+        pos.isScrollingNotifier.addListener(_onSummaryScrollSettled);
+      },
+      onDetach: (pos) {
+        pos.isScrollingNotifier.removeListener(_onSummaryScrollSettled);
+      },
+    );
+    _summaryMainScroll.addListener(_onSummaryMainScroll);
     _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      ref.invalidate(sessionByIdProvider(widget.sessionId));
+      if (!mounted) return;
+      final asyncSession = ref.read(sessionByIdProvider(widget.sessionId));
+      final session = asyncSession.asData?.value;
+      if (session == null) {
+        if (asyncSession.isLoading || asyncSession.hasError) {
+          ref.invalidate(sessionByIdProvider(widget.sessionId));
+        }
+        return;
+      }
+      final st = SessionStatus.fromJson(session.status);
+      if (st == SessionStatus.queued ||
+          st == SessionStatus.summarizing ||
+          st == SessionStatus.recording) {
+        ref.invalidate(sessionByIdProvider(widget.sessionId));
+      }
     });
     _liquidProgress = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 20),
-    )..repeat();
+    );
     _confetti = ConfettiController(duration: const Duration(seconds: 3));
+  }
+
+  void _applyMainBottomFadeFromMetrics(ScrollMetrics m) {
+    if (!m.hasContentDimensions) return;
+    if (m.maxScrollExtent <= m.viewportDimension * 0.06) {
+      if (_mainBottomFadeVisible.value) {
+        // #region agent log
+        _agentLog('H3', 'SummaryScreen:MainScroll', 'bottomFade off', {
+          'pixels': m.pixels,
+          'maxScrollExtent': m.maxScrollExtent,
+        });
+        // #endregion
+        _mainBottomFadeVisible.value = false;
+      }
+    } else {
+      final atBottom = m.pixels >= m.maxScrollExtent - 40;
+      final show = !atBottom;
+      if (show != _mainBottomFadeVisible.value) {
+        // #region agent log
+        _agentLog('H3', 'SummaryScreen:MainScroll', 'bottomFade toggled', {
+          'show': show,
+          'pixels': m.pixels,
+          'maxScrollExtent': m.maxScrollExtent,
+        });
+        // #endregion
+        _mainBottomFadeVisible.value = show;
+      }
+    }
+  }
+
+  void _onSummaryMainScroll() {
+    if (!_summaryMainScroll.hasClients) return;
+    final m = _summaryMainScroll.position;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastBottomFadeEvalMs < 50) return;
+    _lastBottomFadeEvalMs = now;
+    _applyMainBottomFadeFromMetrics(m);
+  }
+
+  void _onSummaryScrollSettled() {
+    if (!mounted || !_summaryMainScroll.hasClients) return;
+    final pos = _summaryMainScroll.position;
+    if (pos.isScrollingNotifier.value) return;
+    _applyMainBottomFadeFromMetrics(pos);
+  }
+
+  void _stopLiquidProgress() {
+    if (_liquidProgress.isAnimating) {
+      _liquidProgress.stop();
+      _liquidProgress.reset();
+    }
+  }
+
+  void _syncLiquidProgressForStatus(SessionStatus st) {
+    final want =
+        st == SessionStatus.queued || st == SessionStatus.summarizing;
+    if (want) {
+      if (!_liquidProgress.isAnimating) _liquidProgress.repeat();
+    } else {
+      _stopLiquidProgress();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant SummaryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sessionId != widget.sessionId) {
+      _summaryMainTab = 0;
+      _quotesUnlocked = false;
+      _mainBottomFadeVisible.value = true;
+      _stopLiquidProgress();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_summaryMainScroll.hasClients) return;
+        _summaryMainScroll.jumpTo(0);
+      });
+    }
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _summaryMainScroll.removeListener(_onSummaryMainScroll);
+    _summaryMainScroll.dispose();
+    _mainBottomFadeVisible.dispose();
     _liquidProgress.dispose();
     _confetti.dispose();
-    _askController.dispose();
     _firstSummaryOverlay?.remove();
     _firstSummaryOverlay = null;
     super.dispose();
@@ -317,9 +1386,17 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
       if (!mounted || already) return;
       await MomentsStatsService.markFirstSummaryDone();
       if (!mounted) return;
+      // #region agent log
+      _agentLog('H4', '_maybeCelebrateFirstSummary', 'play confetti + overlay',
+          {'mounted': mounted});
+      // #endregion
       _confetti.play();
       _showFirstSummaryCelebration();
       Future.delayed(const Duration(seconds: 4), () {
+        // #region agent log
+        _agentLog('H4', '_maybeCelebrateFirstSummary:timer', 'overlay remove',
+            {'hasEntry': _firstSummaryOverlay != null});
+        // #endregion
         _firstSummaryOverlay?.remove();
         _firstSummaryOverlay = null;
       });
@@ -370,6 +1447,10 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                       Expanded(
                         child: FilledButton(
                           onPressed: () {
+                            // #region agent log
+                            _agentLog('H4', 'firstSummaryOverlay', 'dismiss tap',
+                                {});
+                            // #endregion
                             _firstSummaryOverlay?.remove();
                             _firstSummaryOverlay = null;
                           },
@@ -386,6 +1467,9 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
       ),
     );
     overlay.insert(_firstSummaryOverlay!);
+    // #region agent log
+    _agentLog('H4', '_showFirstSummaryCelebration', 'overlay inserted', {});
+    // #endregion
   }
 
   @override
@@ -412,21 +1496,43 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
     });
 
     return sessionAsync.when(
-      loading: () => Scaffold(
-        backgroundColor: Theme.of(context).colorScheme.surface,
-        appBar: AppBar(title: const Text('Summary')),
-        body: const Padding(
-          padding: EdgeInsets.all(Tokens.spaceMd),
-          child: _SummaryLayoutSkeleton(),
-        ),
-      ),
-      error: (e, _) => Scaffold(body: Center(child: Text('Error: $e'))),
+      loading: () {
+        _stopLiquidProgress();
+        return Scaffold(
+          backgroundColor: Theme.of(context).colorScheme.surface,
+          appBar: AppBar(title: const Text('Summary')),
+          body: const Padding(
+            padding: EdgeInsets.all(Tokens.spaceMd),
+            child: _SummaryLayoutSkeleton(),
+          ),
+        );
+      },
+      error: (e, _) {
+        _stopLiquidProgress();
+        return Scaffold(body: Center(child: Text('Error: $e')));
+      },
       data: (session) {
         if (session == null) {
+          _stopLiquidProgress();
           return const Scaffold(body: Center(child: Text('Session not found')));
         }
 
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final cs = Theme.of(context).colorScheme;
+        final appBarChipBg = isDark
+            ? Colors.black.withValues(alpha: 0.4)
+            : cs.surfaceContainerHighest;
+        final appBarIconFg = isDark ? Colors.white : cs.onSurface;
+
+        // #region agent log
+        _agentLog('H-light', 'summary_screen:session', 'summary chrome', {
+          'brightness': Theme.of(context).brightness.name,
+          'bgPrimary': SummaryThemeColors.bgPrimary(context).toARGB32(),
+        });
+        // #endregion
+
         final status = SessionStatus.fromJson(session.status);
+        _syncLiquidProgressForStatus(status);
         final style = SummaryStyle.fromJson(session.summaryStyle);
         final bullets = [
           session.bullet1,
@@ -441,17 +1547,27 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
           session.quote3,
         ].whereType<String>().toList();
 
+        final contentChatContext = contentChatContextBlock(bullets, quotes);
+        final isBookContentChat = useBookContentChatPrompt(session);
+        final chapterBased = SessionDisplayKind.isChapterBased(session);
+        final summaryTabIndex = chapterBased
+            ? (_summaryMainTab > 2 ? 0 : _summaryMainTab)
+            : (_summaryMainTab > 4 ? 0 : _summaryMainTab);
+
         final combined = bullets.join(' ');
         final wc = combined.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
         final readMin = (wc / 200).ceil().clamp(1, 999);
 
         return AnnotatedRegion<SystemUiOverlayStyle>(
-          value: SystemUiOverlayStyle.light,
+          value: isDark
+              ? SystemUiOverlayStyle.light
+              : SystemUiOverlayStyle.dark,
           child: Scaffold(
-            backgroundColor: Tokens.bgPrimary,
+            backgroundColor: SummaryThemeColors.bgPrimary(context),
             body: Stack(
               children: [
                 CustomScrollView(
+                  controller: _summaryMainScroll,
                   physics: const BouncingScrollPhysics(
                     parent: AlwaysScrollableScrollPhysics(),
                   ),
@@ -473,20 +1589,20 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                           height: 32,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.4),
+                            color: appBarChipBg,
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(
+                          child: Icon(
                             Icons.arrow_back_ios_new,
                             size: 16,
-                            color: Colors.white,
+                            color: appBarIconFg,
                           ),
                         ),
                       ),
                       title: Text(
                         'Summary',
                         style: GoogleFonts.syne(
-                          color: Colors.white,
+                          color: appBarIconFg,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -500,13 +1616,13 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                               height: 32,
                               alignment: Alignment.center,
                               decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.4),
+                                color: appBarChipBg,
                                 shape: BoxShape.circle,
                               ),
-                              child: const Icon(
+                              child: Icon(
                                 Icons.ios_share,
                                 size: 16,
-                                color: Colors.white,
+                                color: appBarIconFg,
                               ),
                             ),
                             onSelected: (v) {
@@ -554,13 +1670,13 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                             height: 32,
                             alignment: Alignment.center,
                             decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.4),
+                              color: appBarChipBg,
                               shape: BoxShape.circle,
                             ),
-                            child: const Icon(
+                            child: Icon(
                               Icons.delete_outline,
                               size: 16,
-                              color: Colors.white,
+                              color: appBarIconFg,
                             ),
                           ),
                         ),
@@ -597,14 +1713,20 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                                       Container(
                                         padding: const EdgeInsets.all(16),
                                         decoration: BoxDecoration(
-                                          color: Colors.white
-                                              .withValues(alpha: 0.05),
+                                          color: isDark
+                                              ? Colors.white
+                                                  .withValues(alpha: 0.05)
+                                              : cs.surfaceContainerHighest
+                                                  .withValues(alpha: 0.65),
                                           borderRadius: BorderRadius.circular(
                                             Tokens.radiusMd,
                                           ),
                                           border: Border.all(
-                                            color: Colors.white
-                                                .withValues(alpha: 0.1),
+                                            color: isDark
+                                                ? Colors.white.withValues(
+                                                    alpha: 0.1,
+                                                  )
+                                                : cs.outlineVariant,
                                           ),
                                         ),
                                         child: _StatusCard(status: status),
@@ -639,346 +1761,300 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                               bullets.isNotEmpty)
                             Padding(
                               padding: const EdgeInsets.fromLTRB(
-                                16,
-                                16,
-                                16,
+                                22,
+                                28,
+                                22,
                                 0,
                               ),
-                              child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.stretch,
-                                children: [
-                                  if (style != null)
-                                    Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 4,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Tokens.accentDim,
-                                          borderRadius:
-                                              BorderRadius.circular(20),
-                                          border: Border.all(
-                                            color: Tokens.accentBorder,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          '${style.icon}  ${style.label}'
-                                              .toUpperCase(),
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            color: Tokens.accent,
-                                            fontWeight: FontWeight.w600,
-                                            letterSpacing: 0.8,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  if (style != null)
-                                    const SizedBox(height: Tokens.spaceSm),
-                                  Text(
-                                    _summaryTrustLine(session),
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      height: 1.4,
-                                      color: Colors.white.withValues(alpha: 0.62),
-                                    ),
+                              child: Center(
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: _kSummaryContentMaxWidth,
                                   ),
-                                  const SizedBox(height: Tokens.spaceSm),
-                                  if (session.transcriptSource == 'taddy')
-                                    Padding(
-                                      padding: const EdgeInsets.only(bottom: 8),
-                                      child: Align(
-                                        alignment: Alignment.centerLeft,
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 10,
-                                            vertical: 6,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.amber
-                                                .withValues(alpha: 0.12),
-                                            borderRadius:
-                                                BorderRadius.circular(20),
-                                            border: Border.all(
-                                              color: Colors.amber
-                                                  .withValues(alpha: 0.35),
-                                            ),
-                                          ),
-                                          child: const Text(
-                                            'Timestamps may be approximate (plain transcript)',
-                                            style: TextStyle(
-                                              fontSize: 11,
-                                              color: Colors.white70,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
                                     children: [
-                                      if (PodcastPlayerLinks.looksLikeSpotify(
-                                          _listenUrlForPlayer(session)))
-                                        OutlinedButton.icon(
-                                          onPressed: () {
-                                            unawaited(
-                                              PodcastPlayerLinks.openSpotifyAt(
-                                                _listenUrlForPlayer(session),
-                                                session.startTimeSec,
-                                              ),
-                                            );
-                                          },
-                                          icon: const Icon(Icons.open_in_new,
-                                              size: 16, color: Colors.white70),
-                                          label: const Text(
-                                            'Open in Spotify',
-                                            style:
-                                                TextStyle(color: Colors.white70),
-                                          ),
+                                      Text(
+                                        'Summary',
+                                        style: _summarySectionLabelStyle(
+                                          context,
                                         ),
-                                      if (PodcastPlayerLinks.looksLikeApplePodcasts(
-                                          _listenUrlForPlayer(session)))
-                                        OutlinedButton.icon(
-                                          onPressed: () async {
-                                            higLightTap();
-                                            final ok =
-                                                await PodcastPlayerLinks
-                                                    .openApplePodcasts(
-                                              _listenUrlForPlayer(session),
-                                            );
-                                            if (!context.mounted) return;
-                                            if (!ok) {
-                                              ScaffoldMessenger.of(context)
-                                                  .showSnackBar(
-                                                const SnackBar(
-                                                  content: Text(
-                                                    'Could not open Podcasts. '
-                                                    'Install the Apple Podcasts app, or open the link in Safari.',
-                                                  ),
-                                                  behavior: SnackBarBehavior
-                                                      .floating,
-                                                ),
-                                              );
-                                            }
-                                          },
-                                          icon: const Icon(Icons.podcasts,
-                                              size: 16, color: Colors.white70),
-                                          label: const Text(
-                                            'Open in Apple Podcasts',
-                                            style:
-                                                TextStyle(color: Colors.white70),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                  if (!PodcastPlayerLinks.looksLikeSpotify(
-                                          _listenUrlForPlayer(session)) &&
-                                      !PodcastPlayerLinks.looksLikeApplePodcasts(
-                                          _listenUrlForPlayer(session)))
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 6),
-                                      child: Text(
-                                        'Open in Spotify / Apple Podcasts appears when you save using a podcast link from Home, or when we can derive a show link.',
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Text(
+                                        _summaryTrustLine(session),
                                         style: TextStyle(
-                                          fontSize: 11,
-                                          height: 1.35,
-                                          color: Colors.white
-                                              .withValues(alpha: 0.45),
+                                          fontSize: 13,
+                                          height: 1.55,
+                                          color: SummaryThemeColors.onBodySoft(
+                                            context,
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  if (style != null) ...[
-                                    const SizedBox(height: Tokens.spaceSm),
-                                    Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: TextButton.icon(
-                                        onPressed: () async {
-                                          higLightTap();
-                                          await ref
-                                              .read(sessionActionsProvider)
-                                              .rememberSummaryStyleForShow(
-                                                session.artist,
-                                                style,
-                                              );
-                                          if (context.mounted) {
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(
-                                              SnackBar(
-                                                content: Text(
-                                                  'Future saves from “${session.artist}” will use ${style.label}.',
-                                                ),
-                                                behavior:
-                                                    SnackBarBehavior.floating,
-                                              ),
-                                            );
-                                          }
+                                      const SizedBox(height: 22),
+                                      _SummaryChaptersAndPlayerLinks(
+                                        session: session,
+                                        status: status,
+                                        style: style,
+                                        sessionId: widget.sessionId,
+                                      ),
+                                      const SizedBox(height: 18),
+                                      _AdaptiveSummaryTabs(
+                                        audiobookMode: chapterBased,
+                                        selectedIndex: summaryTabIndex,
+                                        accent: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
+                                        onSelect: (i) {
+                                          // #region agent log
+                                          _agentLog(
+                                              'H2',
+                                              'SummaryScreen:onSelect',
+                                              'set main tab', {
+                                            'newIndex': i,
+                                            'prevStoredTab': _summaryMainTab,
+                                            'firstOverlayActive':
+                                                _firstSummaryOverlay != null,
+                                          });
+                                          // #endregion
+                                          setState(() => _summaryMainTab = i);
                                         },
-                                        icon: const Icon(
-                                          Icons.bookmark_added_outlined,
-                                          size: 18,
-                                          color: Colors.white70,
-                                        ),
-                                        label: Text(
-                                          'Always use ${style.label} for this show',
-                                          style: const TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 13,
-                                          ),
-                                        ),
                                       ),
-                                    ),
-                                  ],
-                                  _TagsRow(session: session),
-                                  const SizedBox(height: Tokens.spaceSm),
-                                  _TypingOrInstantBullets(
-                                    sessionId: session.id,
-                                    bullets: bullets,
-                                    accent: Theme.of(context)
-                                        .colorScheme
-                                        .primary,
-                                    onAllBulletsComplete: () {
-                                      if (mounted) {
-                                        setState(
-                                          () => _quotesUnlocked = true,
-                                        );
-                                      }
-                                    },
-                                  ),
-                                  if (quotes.isNotEmpty && _quotesUnlocked) ...[
-                                    const SizedBox(height: Tokens.spaceLg),
-                                    Text(
-                                      'KEY QUOTES',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        letterSpacing: 1.2,
-                                        fontWeight: FontWeight.w600,
-                                        color: Tokens.textMuted,
+                                      const SizedBox(height: 16),
+                                      Builder(
+                                        builder: (context) {
+                                          final t = summaryTabIndex;
+                                          final showPoints = t == 0;
+                                          final showQuotes =
+                                              !chapterBased && t == 1;
+                                          final showChat = chapterBased
+                                              ? t == 1
+                                              : t == 2;
+                                          final showTags = chapterBased
+                                              ? t == 2
+                                              : t == 3;
+                                          final showMore =
+                                              !chapterBased && t == 4;
+                                          return Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.stretch,
+                                            children: [
+                                              if (showPoints) ...[
+                                                Align(
+                                                  alignment:
+                                                      Alignment.centerLeft,
+                                                  child: SummaryListenControl(
+                                                    plainText:
+                                                        _summaryPlainTextForListen(
+                                                      bullets,
+                                                      quotes,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 12),
+                                                _TypingOrInstantBullets(
+                                                  sessionId: session.id,
+                                                  listenSession: session,
+                                                  bullets: bullets,
+                                                  accent: Theme.of(context)
+                                                      .colorScheme
+                                                      .primary,
+                                                  useStructuredBookCards:
+                                                      chapterBased,
+                                                  useVerticalStack: true,
+                                                  onAllBulletsComplete: () {
+                                                    if (mounted) {
+                                                      setState(() =>
+                                                          _quotesUnlocked =
+                                                              true);
+                                                    }
+                                                  },
+                                                ),
+                                              ],
+                                              if (showQuotes)
+                                                _QuotesTabPanel(
+                                                  quotes: quotes,
+                                                  unlocked: _quotesUnlocked,
+                                                  session: session,
+                                                  accent: Theme.of(context)
+                                                      .colorScheme
+                                                      .primary,
+                                                ),
+                                              if (showChat)
+                                                ContentChat(
+                                                  key: ValueKey(
+                                                      '${session.id}-tab-chat'),
+                                                  systemPrompt:
+                                                      isBookContentChat
+                                                          ? buildBookContentChatSystemPrompt(
+                                                              bookTitle:
+                                                                  session
+                                                                      .title,
+                                                              authorName:
+                                                                  session
+                                                                      .artist,
+                                                              allChapterSummaries:
+                                                                  contentChatContext,
+                                                            )
+                                                          : buildPodcastContentChatSystemPrompt(
+                                                              podcastTitle:
+                                                                  session
+                                                                      .title,
+                                                              podcastTranscriptOrSummary:
+                                                                  contentChatContext,
+                                                            ),
+                                                  title: session.title,
+                                                  starterChips:
+                                                      isBookContentChat
+                                                          ? kBookContentChatStarterChips
+                                                          : kPodcastContentChatStarterChips,
+                                                  embedInTab: true,
+                                                ),
+                                              if (showTags)
+                                                _TagsRow(session: session),
+                                              if (showMore)
+                                                _SummaryMoreTab(
+                                                  session: session,
+                                                  style: style,
+                                                  bullets: bullets,
+                                                  quotes: quotes,
+                                                  wc: wc,
+                                                  readMin: readMin,
+                                                ),
+                                              if (chapterBased) ...[
+                                                const SizedBox(height: 24),
+                                                if (style != null) ...[
+                                                  Align(
+                                                    alignment:
+                                                        Alignment.centerLeft,
+                                                    child: TextButton.icon(
+                                                      onPressed: () async {
+                                                        higLightTap();
+                                                        await ref
+                                                            .read(
+                                                              sessionActionsProvider,
+                                                            )
+                                                            .rememberSummaryStyleForShow(
+                                                              session.artist,
+                                                              style!,
+                                                            );
+                                                        if (context.mounted) {
+                                                          ScaffoldMessenger.of(
+                                                                  context)
+                                                              .showSnackBar(
+                                                            SnackBar(
+                                                              content: Text(
+                                                                'Future saves from “${session.artist}” will use ${style!.label}.',
+                                                              ),
+                                                              behavior:
+                                                                  SnackBarBehavior
+                                                                      .floating,
+                                                            ),
+                                                          );
+                                                        }
+                                                      },
+                                                      icon: const Icon(
+                                                        Icons
+                                                            .bookmark_added_outlined,
+                                                        size: 18,
+                                                        color: Colors.white70,
+                                                      ),
+                                                      label: Text(
+                                                        'Always use ${style!.label} for this show',
+                                                        style: const TextStyle(
+                                                          color: Colors.white70,
+                                                          fontSize: 13,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                                Row(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment
+                                                          .center,
+                                                  children: [
+                                                    Expanded(
+                                                      child: Text(
+                                                        '$wc words · ~$readMin min read',
+                                                        style: TextStyle(
+                                                          fontSize: 12,
+                                                          height: 1.4,
+                                                          color: Tokens
+                                                              .textMuted,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    if (!showPoints)
+                                                      SummaryListenControl(
+                                                        plainText:
+                                                            _summaryPlainTextForListen(
+                                                          bullets,
+                                                          quotes,
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                              ],
+                                            ],
+                                          );
+                                        },
                                       ),
-                                    ),
-                                    const SizedBox(height: Tokens.spaceSm),
-                                    ...quotes.map(
-                                      (q) => TweenAnimationBuilder<double>(
-                                        tween: Tween(begin: 0, end: 1),
-                                        duration: const Duration(
-                                          milliseconds: 450,
-                                        ),
-                                        curve: Curves.easeOutCubic,
-                                        builder: (context, t, child) =>
-                                            Opacity(
-                                          opacity: t,
-                                          child: Transform.translate(
-                                            offset: Offset(0, 8 * (1 - t)),
-                                            child: child,
-                                          ),
-                                        ),
-                                        child: _MagazineQuoteCard(
-                                          text: q,
-                                          accent: Theme.of(context)
-                                              .colorScheme
-                                              .primary,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                  const SizedBox(height: Tokens.spaceSm),
-                                  Text(
-                                    '$wc words · ~$readMin min read',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Tokens.textMuted,
-                                    ),
-                                  ),
                                 ],
+                              ),
+                                ),
                               ),
                             ),
                           if (status == SessionStatus.done &&
                               bullets.isEmpty)
-                            const Padding(
-                              padding: EdgeInsets.fromLTRB(16, 24, 16, 0),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 24, 16, 0),
                               child: Text(
                                 'No summary content available.',
-                                style: TextStyle(color: Colors.white70),
-                              ),
-                            ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
-                            child: Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                'JUMP & SUMMARIZE',
                                 style: TextStyle(
-                                  fontSize: 11,
-                                  letterSpacing: 1.2,
-                                  fontWeight: FontWeight.w600,
-                                  color: Tokens.textMuted,
-                                ),
-                              ),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            child: _EpisodeTimelineSection(session: session),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
-                            child: Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                'WHAT ELSE DO YOU WANT TO KNOW?',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  letterSpacing: 1.2,
-                                  fontWeight: FontWeight.w600,
-                                  color: Tokens.textMuted,
-                                ),
-                              ),
-                            ),
-                          ),
-                          Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 16),
-                            decoration: BoxDecoration(
-                              color: Tokens.bgElevated,
-                              borderRadius: BorderRadius.circular(30),
-                              border: Border.all(color: Tokens.borderLight),
-                            ),
-                            child: TextField(
-                              controller: _askController,
-                              style: const TextStyle(color: Colors.white),
-                              cursorColor: Colors.white,
-                              decoration: InputDecoration(
-                                prefixIcon: Icon(
-                                  Icons.auto_awesome,
-                                  color: Colors.white.withValues(alpha: 0.6),
-                                  size: 22,
-                                ),
-                                hintText: 'Ask the episode…',
-                                hintStyle: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.4),
-                                ),
-                                border: InputBorder.none,
-                                filled: false,
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 14,
-                                ),
-                              ),
-                              onSubmitted: (q) {
-                                if (q.trim().isEmpty) return;
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      '“$q” — deeper Q&A is coming soon.',
-                                    ),
-                                    behavior: SnackBarBehavior.floating,
+                                  color: SummaryThemeColors.onBodySoft(
+                                    context,
                                   ),
-                                );
-                              },
+                                ),
+                              ),
                             ),
-                          ),
+                          if (!SessionDisplayKind.isChapterBased(session)) ...[
+                            Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(22, 32, 22, 10),
+                              child: Center(
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: _kSummaryContentMaxWidth,
+                                  ),
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Text(
+                                      'Jump & summarize',
+                                      style: _summarySectionLabelStyle(
+                                        context,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 22),
+                              child: Center(
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: _kSummaryContentMaxWidth,
+                                  ),
+                                  child: _EpisodeTimelineSection(
+                                      session: session),
+                                ),
+                              ),
+                            ),
+                          ],
                           SizedBox(
                             height: MediaQuery.paddingOf(context).bottom + 32,
                           ),
@@ -986,6 +2062,36 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
                       ),
                     ),
                   ],
+                ),
+                ValueListenableBuilder<bool>(
+                  valueListenable: _mainBottomFadeVisible,
+                  builder: (context, showFade, _) {
+                    if (!showFade) return const SizedBox.shrink();
+                    return Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      height: 60,
+                      child: SafeArea(
+                        top: false,
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  SummaryThemeColors.bgPrimary(context)
+                                      .withValues(alpha: 0),
+                                  SummaryThemeColors.bgPrimary(context),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
                 ),
                 Align(
                   alignment: Alignment.topCenter,
@@ -1013,6 +2119,142 @@ class _SummaryScreenState extends ConsumerState<SummaryScreen>
   }
 }
 
+/// Collapsed by default; header tap expands the chapter list.
+class _CollapsibleChapterTray extends StatefulWidget {
+  const _CollapsibleChapterTray({
+    required this.leadingIcon,
+    required this.accent,
+    required this.title,
+    required this.subtitle,
+    required this.expandedBody,
+  });
+
+  final IconData leadingIcon;
+  final Color accent;
+  final String title;
+  final String subtitle;
+  final Widget expandedBody;
+
+  @override
+  State<_CollapsibleChapterTray> createState() =>
+      _CollapsibleChapterTrayState();
+}
+
+class _CollapsibleChapterTrayState extends State<_CollapsibleChapterTray> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Material(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.07)
+              : cs.surfaceContainerHighest.withValues(alpha: 0.75),
+          borderRadius: BorderRadius.circular(18),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () {
+              higLightTap();
+              setState(() => _open = !_open);
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: widget.accent.withValues(alpha: 0.22),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(
+                      widget.leadingIcon,
+                      color: widget.accent,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.title,
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: isDark
+                                ? Colors.white.withValues(alpha: 0.95)
+                                : cs.onSurface,
+                            letterSpacing: -0.2,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          widget.subtitle,
+                          style: TextStyle(
+                            fontSize: 12,
+                            height: 1.3,
+                            color: isDark
+                                ? Colors.white.withValues(alpha: 0.55)
+                                : cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  AnimatedRotation(
+                    turns: _open ? 0.5 : 0,
+                    duration: Tokens.durationFast,
+                    curve: Tokens.springCurve,
+                    child: Icon(
+                      Icons.expand_more_rounded,
+                      color: isDark
+                          ? Colors.white.withValues(alpha: 0.65)
+                          : cs.onSurfaceVariant,
+                      size: 28,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        AnimatedCrossFade(
+          firstChild: const SizedBox.shrink(),
+          secondChild: Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              decoration: BoxDecoration(
+                color: isDark
+                    ? Colors.white.withValues(alpha: 0.045)
+                    : cs.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isDark
+                      ? Colors.white.withValues(alpha: 0.09)
+                      : cs.outlineVariant,
+                ),
+              ),
+              child: widget.expandedBody,
+            ),
+          ),
+          crossFadeState:
+              _open ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+          duration: const Duration(milliseconds: 240),
+          sizeCurve: Curves.easeOutCubic,
+        ),
+      ],
+    );
+  }
+}
+
 /// Full-bleed ~320px cinema hero: blurred artwork, palette tint, cover, title stack.
 class _CinematicHero extends StatefulWidget {
   const _CinematicHero({required this.session});
@@ -1031,7 +2273,9 @@ class _CinematicHeroState extends State<_CinematicHero> {
   @override
   void initState() {
     super.initState();
-    unawaited(_extractPalette());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_extractPalette());
+    });
   }
 
   @override
@@ -1039,7 +2283,9 @@ class _CinematicHeroState extends State<_CinematicHero> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session.id != widget.session.id ||
         oldWidget.session.artworkUrl != widget.session.artworkUrl) {
-      unawaited(_extractPalette());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_extractPalette());
+      });
     }
   }
 
@@ -1073,35 +2319,44 @@ class _CinematicHeroState extends State<_CinematicHero> {
         raw.isNotEmpty &&
         (raw.startsWith('http://') || raw.startsWith('https://'));
 
-    final showTimePill =
-        session.startTimeSec > 0 || session.endTimeSec != null;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cs = Theme.of(context).colorScheme;
+    final heroFg = isDark ? Colors.white : cs.onSurface;
+    final heroFgSoft =
+        isDark ? Colors.white.withValues(alpha: 0.7) : cs.onSurfaceVariant;
+
+    final chapterBased = SessionDisplayKind.isChapterBased(session);
+    final showTimePill = !chapterBased &&
+        (session.startTimeSec > 0 || session.endTimeSec != null);
 
     final letter = session.artist.trim().isNotEmpty
         ? session.artist.trim()[0].toUpperCase()
         : '?';
 
     final blurredLayer = hasUrl
-        ? ImageFiltered(
-            imageFilter: ui.ImageFilter.blur(sigmaX: 40, sigmaY: 40),
-            child: CachedNetworkImage(
-              imageUrl: url,
-              fit: BoxFit.cover,
-              width: double.infinity,
-              height: _heroHeight,
-              color: Colors.black.withValues(alpha: 0.35),
-              colorBlendMode: BlendMode.darken,
-              placeholder: (context, _) => Container(
-                color: Tokens.bgSurface,
-              ),
-              errorWidget: (context, url, err) => Container(
-                color: Tokens.bgSurface,
+        ? RepaintBoundary(
+            child: ImageFiltered(
+              imageFilter: ui.ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+              child: CachedNetworkImage(
+                imageUrl: url,
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: _heroHeight,
+                color: Colors.black.withValues(alpha: 0.35),
+                colorBlendMode: BlendMode.darken,
+                placeholder: (context, _) => Container(
+                  color: SummaryThemeColors.bgSurface(context),
+                ),
+                errorWidget: (context, url, err) => Container(
+                  color: SummaryThemeColors.bgSurface(context),
+                ),
               ),
             ),
           )
         : Container(
             width: double.infinity,
             height: _heroHeight,
-            color: Tokens.bgSurface,
+            color: SummaryThemeColors.bgSurface(context),
           );
 
     return SizedBox(
@@ -1131,8 +2386,9 @@ class _CinematicHeroState extends State<_CinematicHero> {
                   colors: [
                     Colors.black.withValues(alpha: 0.1),
                     Colors.transparent,
-                    Tokens.bgPrimary.withValues(alpha: 0.7),
-                    Tokens.bgPrimary,
+                    SummaryThemeColors.bgPrimary(context)
+                        .withValues(alpha: 0.7),
+                    SummaryThemeColors.bgPrimary(context),
                   ],
                 ),
               ),
@@ -1151,9 +2407,15 @@ class _CinematicHeroState extends State<_CinematicHero> {
                   borderRadius: BorderRadius.circular(14),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.5),
-                      blurRadius: 24,
-                      offset: const Offset(0, 8),
+                      color: Colors.black.withValues(alpha: 0.62),
+                      blurRadius: 36,
+                      spreadRadius: 1,
+                      offset: const Offset(0, 14),
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.35),
+                      blurRadius: 18,
+                      offset: const Offset(0, 6),
                     ),
                   ],
                 ),
@@ -1166,39 +2428,39 @@ class _CinematicHeroState extends State<_CinematicHero> {
                           width: 120,
                           height: 120,
                           placeholder: (context, _) => Container(
-                            color: Tokens.bgElevated,
+                            color: SummaryThemeColors.bgElevated(context),
                             alignment: Alignment.center,
                             child: Text(
                               letter,
                               style: TextStyle(
                                 fontSize: 48,
                                 fontWeight: FontWeight.bold,
-                                color: Tokens.textMuted,
+                                color: SummaryThemeColors.textMuted(context),
                               ),
                             ),
                           ),
                           errorWidget: (context, url, err) => Container(
-                            color: Tokens.bgElevated,
+                            color: SummaryThemeColors.bgElevated(context),
                             alignment: Alignment.center,
                             child: Text(
                               letter,
                               style: TextStyle(
                                 fontSize: 48,
                                 fontWeight: FontWeight.bold,
-                                color: Tokens.textMuted,
+                                color: SummaryThemeColors.textMuted(context),
                               ),
                             ),
                           ),
                         )
                       : Container(
-                          color: Tokens.bgElevated,
+                          color: SummaryThemeColors.bgElevated(context),
                           alignment: Alignment.center,
                           child: Text(
                             letter,
                             style: TextStyle(
                               fontSize: 48,
                               fontWeight: FontWeight.bold,
-                              color: Tokens.textMuted,
+                              color: SummaryThemeColors.textMuted(context),
                             ),
                           ),
                         ),
@@ -1222,10 +2484,12 @@ class _CinematicHeroState extends State<_CinematicHero> {
                   style: GoogleFonts.syne(
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
-                    color: Colors.white,
+                    color: heroFg,
                     shadows: [
                       Shadow(
-                        color: Colors.black.withValues(alpha: 0.5),
+                        color: Colors.black.withValues(
+                          alpha: isDark ? 0.5 : 0.12,
+                        ),
                         blurRadius: 8,
                       ),
                     ],
@@ -1239,21 +2503,70 @@ class _CinematicHeroState extends State<_CinematicHero> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 13,
-                    color: Colors.white.withValues(alpha: 0.7),
+                    color: heroFgSoft,
                   ),
                 ),
                 const SizedBox(height: 8),
-                if (showTimePill)
+                if (chapterBased)
+                  Container(
+                    constraints: const BoxConstraints(maxWidth: 320),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isDark
+                          ? Colors.black.withValues(alpha: 0.42)
+                          : cs.surfaceContainerHighest.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(
+                        color: isDark
+                            ? Colors.white.withValues(alpha: 0.18)
+                            : cs.outlineVariant,
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.menu_book_outlined,
+                          size: 17,
+                          color: heroFg,
+                        ),
+                        const SizedBox(width: 10),
+                        Flexible(
+                          child: Text(
+                            _chapterHeroSubtitle(session),
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              height: 1.25,
+                              color: heroFg,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else if (showTimePill)
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 12,
                       vertical: 4,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.4),
+                      color: isDark
+                          ? Colors.black.withValues(alpha: 0.4)
+                          : cs.surfaceContainerHighest.withValues(alpha: 0.9),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.2),
+                        color: isDark
+                            ? Colors.white.withValues(alpha: 0.2)
+                            : cs.outlineVariant,
                         width: 1,
                       ),
                     ),
@@ -1261,7 +2574,7 @@ class _CinematicHeroState extends State<_CinematicHero> {
                       _summaryDurationLabel(session),
                       style: GoogleFonts.dmMono(
                         fontSize: 12,
-                        color: Colors.white.withValues(alpha: 0.85),
+                        color: heroFg,
                       ),
                     ),
                   ),
@@ -1275,18 +2588,242 @@ class _CinematicHeroState extends State<_CinematicHero> {
   }
 }
 
+/// Multi-part summaries: horizontal section “tabs” on top; content switches below.
+class _SummarySectionTabsView extends StatefulWidget {
+  const _SummarySectionTabsView({
+    required this.bullets,
+    required this.accent,
+    required this.useStructuredBookCards,
+    required this.listenSession,
+    required this.onAllBulletsComplete,
+  });
+
+  final List<String> bullets;
+  final Color accent;
+  final bool useStructuredBookCards;
+  final ListeningSession listenSession;
+  final VoidCallback onAllBulletsComplete;
+
+  @override
+  State<_SummarySectionTabsView> createState() =>
+      _SummarySectionTabsViewState();
+}
+
+class _SummarySectionTabsViewState extends State<_SummarySectionTabsView> {
+  int _selected = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.onAllBulletsComplete();
+    });
+  }
+
+  Widget _panelBody() {
+    final raw = widget.bullets[_selected];
+    final parts = _splitEpisodeTimestamp(raw);
+    if (widget.useStructuredBookCards) {
+      final parsed = parseSummaryBulletSections(parts.body);
+      // Title is shown on the tab; panel is body only.
+      return Text(
+        parsed.body,
+        style: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w400,
+          height: 1.7,
+          color: SummaryThemeColors.onBody(context),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 4, 0, 8),
+      child: _GlassBulletCard(
+        accent: widget.accent,
+        listenSession: widget.listenSession,
+        timestampAt: parts.at,
+        onShare: () => _shareInsightCard(context, parts.body),
+        child: Text(
+          parts.body,
+          style: _summaryBulletStyle(context, _selected + 1),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final h = (MediaQuery.sizeOf(context).height * 0.52).clamp(340.0, 600.0);
+    final accent = widget.accent;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cs = Theme.of(context).colorScheme;
+
+    return SizedBox(
+      height: h,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: 48,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(bottom: 8),
+              addAutomaticKeepAlives: false,
+              addRepaintBoundaries: false,
+              cacheExtent: 500,
+              itemCount: widget.bullets.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 10),
+              itemBuilder: (context, i) {
+                return Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () {
+                      higLightTap();
+                      setState(() => _selected = i);
+                    },
+                    borderRadius: BorderRadius.circular(22),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOutCubic,
+                      padding: EdgeInsets.symmetric(
+                        horizontal:
+                            widget.useStructuredBookCards ? 16 : 12,
+                        vertical: 11,
+                      ),
+                      constraints: widget.useStructuredBookCards
+                          ? null
+                          : const BoxConstraints(minWidth: 40),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(22),
+                        color: i == _selected
+                            ? accent.withValues(alpha: 0.22)
+                            : (isDark
+                                ? Colors.white.withValues(alpha: 0.06)
+                                : cs.surfaceContainerHighest
+                                    .withValues(alpha: 0.85)),
+                        border: Border.all(
+                          color: i == _selected
+                              ? accent.withValues(alpha: 0.65)
+                              : (isDark
+                                  ? Colors.white.withValues(alpha: 0.14)
+                                  : cs.outlineVariant),
+                          width: i == _selected ? 1.5 : 1,
+                        ),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        _summaryBulletRailLabel(
+                          widget.bullets[i],
+                          i,
+                          widget.useStructuredBookCards,
+                        ),
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize:
+                              widget.useStructuredBookCards ? 13 : 14,
+                          fontWeight: i == _selected
+                              ? FontWeight.w700
+                              : FontWeight.w600,
+                          fontFeatures: widget.useStructuredBookCards
+                              ? null
+                              : const [ui.FontFeature.tabularFigures()],
+                          color: i == _selected
+                              ? (isDark
+                                  ? Colors.white.withValues(alpha: 0.96)
+                                  : cs.onSurface)
+                              : (isDark
+                                  ? Colors.white.withValues(alpha: 0.65)
+                                  : cs.onSurfaceVariant),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 16),
+          Expanded(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: isDark
+                    ? Colors.white.withValues(alpha: 0.04)
+                    : cs.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(Tokens.radiusLg),
+                border: Border.all(
+                  color: isDark
+                      ? Colors.white.withValues(alpha: 0.09)
+                      : cs.outlineVariant,
+                ),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(Tokens.radiusLg),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(
+                        20,
+                        20,
+                        22,
+                        80,
+                      ),
+                      child: _panelBody(),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      height: 60,
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                SummaryThemeColors.bgPrimary(context)
+                                    .withValues(alpha: 0),
+                                SummaryThemeColors.bgPrimary(context),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Typewriter bullets only the first time this summary is viewed; then instant.
 class _TypingOrInstantBullets extends StatefulWidget {
   const _TypingOrInstantBullets({
     required this.sessionId,
+    required this.listenSession,
     required this.bullets,
     required this.accent,
+    this.useStructuredBookCards = false,
+    this.useVerticalStack = false,
     required this.onAllBulletsComplete,
   });
 
   final String sessionId;
+  final ListeningSession listenSession;
   final List<String> bullets;
   final Color accent;
+  /// Audiobook / Gutenberg: section titles + plain body (no markdown / no # chips).
+  final bool useStructuredBookCards;
+  /// When true, never use horizontal 1–5 point tabs (main summary uses section tabs).
+  final bool useVerticalStack;
   final VoidCallback onAllBulletsComplete;
 
   @override
@@ -1315,6 +2852,16 @@ class _TypingOrInstantBulletsState extends State<_TypingOrInstantBullets> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.bullets.length > 1 && !widget.useVerticalStack) {
+      return _SummarySectionTabsView(
+        bullets: widget.bullets,
+        accent: widget.accent,
+        useStructuredBookCards: widget.useStructuredBookCards,
+        listenSession: widget.listenSession,
+        onAllBulletsComplete: widget.onAllBulletsComplete,
+      );
+    }
+
     return FutureBuilder<bool>(
       future: _playedFuture,
       builder: (context, snapshot) {
@@ -1338,20 +2885,46 @@ class _TypingOrInstantBulletsState extends State<_TypingOrInstantBullets> {
           final instantChildren = <Widget>[];
           for (var j = 0; j < widget.bullets.length; j++) {
             if (j > 0) {
-              instantChildren.add(const SizedBox(height: Tokens.spaceSm));
+              instantChildren.add(const SizedBox(height: 20));
             }
             final parts = _splitEpisodeTimestamp(widget.bullets[j]);
-            instantChildren.add(
-              _GlassBulletCard(
-                index: j + 1,
-                accent: widget.accent,
-                timestampAt: parts.at,
-                child: Text(
-                  parts.body,
-                  style: _summaryBulletStyle(j + 1),
+            if (widget.useStructuredBookCards) {
+              final parsed = parseSummaryBulletSections(parts.body);
+              instantChildren.add(
+                _BookSummarySectionCard(
+                  accent: widget.accent,
+                  title: parsed.title,
+                  sectionIndex: j + 1,
+                  sharePlain:
+                      _bookSectionSharePlain(parsed.title, j + 1, parsed.body),
+                  body: Text(
+                    parsed.body,
+                    style: TextStyle(
+                      fontSize: j == 0 ? 17 : 16,
+                      fontWeight:
+                          j == 0 ? FontWeight.w500 : FontWeight.w400,
+                      height: 1.72,
+                      color: SummaryThemeColors.onBody(context).withValues(
+                        alpha: j == 0 ? 0.94 : 0.88,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-            );
+              );
+            } else {
+              instantChildren.add(
+                _GlassBulletCard(
+                  accent: widget.accent,
+                  listenSession: widget.listenSession,
+                  timestampAt: parts.at,
+                  onShare: () => _shareInsightCard(context, parts.body),
+                  child: Text(
+                    parts.body,
+                    style: _summaryBulletStyle(context, j + 1),
+                  ),
+                ),
+              );
+            }
           }
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1362,6 +2935,8 @@ class _TypingOrInstantBulletsState extends State<_TypingOrInstantBullets> {
         return _SequentialTypeBullets(
           bullets: widget.bullets,
           accent: widget.accent,
+          listenSession: widget.listenSession,
+          useStructuredBookCards: widget.useStructuredBookCards,
           onAllBulletsComplete: () {
             MomentsStatsService.markSummaryTypewriterPlayed(widget.sessionId)
                 .then((_) {
@@ -1378,11 +2953,15 @@ class _SequentialTypeBullets extends StatefulWidget {
   const _SequentialTypeBullets({
     required this.bullets,
     required this.accent,
+    required this.listenSession,
+    this.useStructuredBookCards = false,
     this.onAllBulletsComplete,
   });
 
   final List<String> bullets;
   final Color accent;
+  final ListeningSession listenSession;
+  final bool useStructuredBookCards;
   final VoidCallback? onAllBulletsComplete;
 
   @override
@@ -1400,47 +2979,113 @@ class _SequentialTypeBulletsState extends State<_SequentialTypeBullets> {
     final children = <Widget>[];
     for (var j = 0; j < _completed; j++) {
       if (j > 0) {
-        children.add(const SizedBox(height: Tokens.spaceSm));
+        children.add(SizedBox(
+            height: widget.useStructuredBookCards ? 20 : 16));
       }
       final parts = _splitEpisodeTimestamp(widget.bullets[j]);
-      children.add(
-        _GlassBulletCard(
-          index: j + 1,
-          accent: widget.accent,
-          timestampAt: parts.at,
-          child: Text(
-            parts.body,
-            style: _summaryBulletStyle(j + 1),
+      if (widget.useStructuredBookCards) {
+        final parsed = parseSummaryBulletSections(parts.body);
+        children.add(
+          _BookSummarySectionCard(
+            accent: widget.accent,
+            title: parsed.title,
+            sectionIndex: j + 1,
+            sharePlain:
+                _bookSectionSharePlain(parsed.title, j + 1, parsed.body),
+            body: Text(
+              parsed.body,
+              style: TextStyle(
+                fontSize: j == 0 ? 17 : 16,
+                fontWeight: j == 0 ? FontWeight.w500 : FontWeight.w400,
+                height: 1.72,
+                color: SummaryThemeColors.onBody(context).withValues(
+                  alpha: j == 0 ? 0.94 : 0.88,
+                ),
+              ),
+            ),
           ),
-        ),
-      );
+        );
+      } else {
+        children.add(
+          _GlassBulletCard(
+            accent: widget.accent,
+            listenSession: widget.listenSession,
+            timestampAt: parts.at,
+            onShare: () => _shareInsightCard(context, parts.body),
+            child: Text(
+              parts.body,
+              style: _summaryBulletStyle(context, j + 1),
+            ),
+          ),
+        );
+      }
     }
     if (_completed < widget.bullets.length) {
       if (_completed > 0) {
-        children.add(const SizedBox(height: Tokens.spaceSm));
+        children.add(SizedBox(
+            height: widget.useStructuredBookCards ? 20 : 16));
       }
       final cur = _splitEpisodeTimestamp(widget.bullets[_completed]);
-      children.add(
-        _GlassBulletCard(
-          index: _completed + 1,
-          accent: widget.accent,
-          timestampAt: cur.at,
-          child: TypewriteText(
-            key: ValueKey('tw-$_completed-${widget.bullets[_completed]}'),
-            text: cur.body,
-            charsPerSecond: 30,
-            style: _summaryBulletStyle(_completed + 1),
-            onComplete: () {
-              setState(() {
-                _completed++;
-                if (_completed >= widget.bullets.length) {
-                  widget.onAllBulletsComplete?.call();
-                }
-              });
-            },
+      final parsed = parseSummaryBulletSections(cur.body);
+      if (widget.useStructuredBookCards) {
+        children.add(
+          _BookSummarySectionCard(
+            accent: widget.accent,
+            title: parsed.title,
+            sectionIndex: _completed + 1,
+            sharePlain: _bookSectionSharePlain(
+              parsed.title,
+              _completed + 1,
+              parsed.body,
+            ),
+            body: TypewriteText(
+              key: ValueKey('tw-$_completed-${widget.bullets[_completed]}'),
+              text: parsed.body,
+              charsPerSecond: 200,
+              style: TextStyle(
+                fontSize: _completed == 0 ? 17 : 16,
+                fontWeight:
+                    _completed == 0 ? FontWeight.w500 : FontWeight.w400,
+                height: 1.72,
+                color: SummaryThemeColors.onBody(context).withValues(
+                  alpha: _completed == 0 ? 0.94 : 0.88,
+                ),
+              ),
+              onComplete: () {
+                setState(() {
+                  _completed++;
+                  if (_completed >= widget.bullets.length) {
+                    widget.onAllBulletsComplete?.call();
+                  }
+                });
+              },
+            ),
           ),
-        ),
-      );
+        );
+      } else {
+        children.add(
+          _GlassBulletCard(
+            accent: widget.accent,
+            listenSession: widget.listenSession,
+            timestampAt: cur.at,
+            onShare: () => _shareInsightCard(context, cur.body),
+            child: TypewriteText(
+              key: ValueKey('tw-$_completed-${widget.bullets[_completed]}'),
+              text: cur.body,
+              charsPerSecond: 200,
+              style: _summaryBulletStyle(context, _completed + 1),
+              onComplete: () {
+                setState(() {
+                  _completed++;
+                  if (_completed >= widget.bullets.length) {
+                    widget.onAllBulletsComplete?.call();
+                  }
+                });
+              },
+            ),
+          ),
+        );
+      }
     }
 
     return Column(
@@ -1450,74 +3095,220 @@ class _SequentialTypeBulletsState extends State<_SequentialTypeBullets> {
   }
 }
 
+/// Rich card for audiobook / ebook section summaries (plain typography, no markdown).
+class _BookSummarySectionCard extends StatelessWidget {
+  const _BookSummarySectionCard({
+    required this.accent,
+    required this.title,
+    required this.sectionIndex,
+    required this.body,
+    this.sharePlain,
+  });
+
+  final Color accent;
+  final String? title;
+  final int sectionIndex;
+  final Widget body;
+  final String? sharePlain;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = (title != null && title!.trim().isNotEmpty)
+        ? title!.trim()
+        : 'Section $sectionIndex';
+
+    return RepaintBoundary(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(Tokens.radiusLg),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 20, 20, 22),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.045),
+              borderRadius: BorderRadius.circular(Tokens.radiusLg),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.09)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.2),
+                  blurRadius: 24,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    width: 3,
+                    constraints: const BoxConstraints(minHeight: 52),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(3),
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          accent.withValues(alpha: 0.85),
+                          accent.withValues(alpha: 0.32),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(right: 36),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                label,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.15,
+                                  height: 1.35,
+                                  color: accent.withValues(alpha: 0.9),
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              body,
+                            ],
+                          ),
+                        ),
+                        if (sharePlain != null &&
+                            sharePlain!.trim().isNotEmpty)
+                          Positioned(
+                            top: 0,
+                            right: 0,
+                            child: IconButton(
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 36,
+                                minHeight: 36,
+                              ),
+                              icon: Icon(
+                                Icons.north_east_rounded,
+                                size: 18,
+                                color: Colors.white.withValues(alpha: 0.45),
+                              ),
+                              onPressed: () =>
+                                  _shareInsightCard(context, sharePlain!),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _GlassBulletCard extends StatelessWidget {
   const _GlassBulletCard({
-    required this.index,
     required this.accent,
+    required this.listenSession,
     required this.child,
+    required this.onShare,
     this.timestampAt,
   });
 
-  final int index;
   final Color accent;
+  final ListeningSession listenSession;
   final Widget child;
+  final VoidCallback onShare;
 
   /// Episode clock for this bullet (shown above [child], next to the text block).
   final String? timestampAt;
 
-  double get _circle {
-    if (index <= 1) return 24;
-    if (index == 2) return 20;
-    return 18;
-  }
-
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(Tokens.radiusMd),
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          padding: const EdgeInsets.all(Tokens.spaceSm + 6),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.05),
-            borderRadius: BorderRadius.circular(Tokens.radiusMd),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: _circle,
-                height: _circle,
-                decoration: BoxDecoration(
-                  color: accent.withValues(alpha: 0.35),
-                  borderRadius: BorderRadius.circular(Tokens.radiusSm),
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  '$index',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                    fontSize: _circle < 22 ? 11 : 12,
+    return RepaintBoundary(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(Tokens.radiusLg),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.045),
+              borderRadius: BorderRadius.circular(Tokens.radiusLg),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.1),
+              ),
+            ),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    width: 3,
+                    decoration: BoxDecoration(
+                      color: _kSummaryCyan,
+                      borderRadius: BorderRadius.only(
+                        topLeft: Radius.circular(Tokens.radiusLg),
+                        bottomLeft: Radius.circular(Tokens.radiusLg),
+                      ),
+                    ),
                   ),
-                ),
+                  Expanded(
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 12, 44),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (timestampAt != null &&
+                                  timestampAt!.isNotEmpty) ...[
+                                if (SessionDisplayKind.isChapterBased(
+                                    listenSession))
+                                  _EpisodeTimestampPill(at: timestampAt!)
+                                else
+                                  _TappableEpisodeTimestampPill(
+                                    at: timestampAt!,
+                                    session: listenSession,
+                                  ),
+                                const SizedBox(height: 10),
+                              ],
+                              child,
+                            ],
+                          ),
+                        ),
+                        Positioned(
+                          bottom: 4,
+                          right: 4,
+                          child: IconButton(
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 36,
+                              minHeight: 36,
+                            ),
+                            icon: Icon(
+                              Icons.north_east_rounded,
+                              size: 18,
+                              color: Colors.white.withValues(alpha: 0.45),
+                            ),
+                            onPressed: onShare,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: Tokens.spaceSm + 4),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (timestampAt != null && timestampAt!.isNotEmpty) ...[
-                      _EpisodeTimestampPill(at: timestampAt!),
-                      const SizedBox(height: 8),
-                    ],
-                    child,
-                  ],
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -1526,10 +3317,15 @@ class _GlassBulletCard extends StatelessWidget {
 }
 
 class _MagazineQuoteCard extends StatelessWidget {
-  const _MagazineQuoteCard({required this.text, required this.accent});
+  const _MagazineQuoteCard({
+    required this.text,
+    required this.accent,
+    required this.session,
+  });
 
   final String text;
   final Color accent;
+  final ListeningSession session;
 
   @override
   Widget build(BuildContext context) {
@@ -1537,55 +3333,86 @@ class _MagazineQuoteCard extends StatelessWidget {
     final body = parts.body;
     final heardAt = parts.at;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Tokens.bgSurface,
-        borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.06),
+    return RepaintBoundary(
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
+        decoration: BoxDecoration(
+          color: SummaryThemeColors.bgSurface(context),
+          borderRadius: BorderRadius.circular(Tokens.radiusLg),
+          border: Border.all(
+            color: SummaryThemeColors.borderLight(context),
+          ),
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (heardAt != null) ...[
-            _EpisodeTimestampPill(at: heardAt),
-            const SizedBox(height: 10),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 36),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (heardAt != null) ...[
+                    _TappableEpisodeTimestampPill(
+                      at: heardAt,
+                      session: session,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Text(
+                    '"',
+                    style: TextStyle(
+                      fontSize: 40,
+                      height: 0.85,
+                      color: accent.withValues(alpha: 0.25),
+                      fontFamily: 'Georgia',
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    body,
+                    style: TextStyle(
+                      fontStyle: FontStyle.italic,
+                      fontSize: 16,
+                      height: 1.72,
+                      letterSpacing: 0.15,
+                      color: SummaryThemeColors.onBody(context),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    heardAt != null
+                        ? 'Heard at $heardAt in this episode'
+                        : 'Direct quote',
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.35,
+                      color: SummaryThemeColors.textMuted(context),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Positioned(
+              bottom: 0,
+              right: 2,
+              child: IconButton(
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(
+                  minWidth: 36,
+                  minHeight: 36,
+                ),
+                icon: Icon(
+                  Icons.north_east_rounded,
+                  size: 18,
+                  color: SummaryThemeColors.onBodySoft(context),
+                ),
+                onPressed: () => _shareInsightCard(context, body),
+              ),
+            ),
           ],
-          Text(
-            '"',
-            style: TextStyle(
-              fontSize: 48,
-              height: 0.8,
-              color: accent.withValues(alpha: 0.3),
-              fontFamily: 'Georgia',
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            body,
-            style: TextStyle(
-              fontStyle: FontStyle.italic,
-              fontSize: 15,
-              height: 1.7,
-              letterSpacing: 0.2,
-              color: Colors.white.withValues(alpha: 0.85),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            heardAt != null
-                ? 'Heard at $heardAt in this episode'
-                : '— direct quote',
-            style: TextStyle(
-              fontSize: 11,
-              color: Tokens.textMuted,
-              fontStyle: FontStyle.italic,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1598,11 +3425,13 @@ class _StatusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isSummarizing = status == SessionStatus.summarizing;
+    final meta = SummaryThemeColors.textMuted(context);
+    final body = SummaryThemeColors.onBody(context);
     return Row(
       children: [
         Icon(
           isSummarizing ? Icons.auto_awesome : Icons.hourglass_top_rounded,
-          color: Colors.white70,
+          color: meta,
           size: 22,
         ),
         const SizedBox(width: Tokens.spaceSm + 4),
@@ -1611,7 +3440,7 @@ class _StatusCard extends StatelessWidget {
             isSummarizing
                 ? 'Summarizing your podcast moment...'
                 : 'Queued — will start summarizing shortly',
-            style: const TextStyle(color: Colors.white, fontSize: 16),
+            style: TextStyle(color: body, fontSize: 16),
           ),
         ),
       ],
@@ -1632,9 +3461,11 @@ class _TagsRow extends ConsumerWidget {
     final controller = TextEditingController(text: session.tags ?? '');
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: Tokens.bgElevated,
+      backgroundColor: SummaryThemeColors.bgElevated(context),
       isScrollControlled: true,
       builder: (ctx) {
+        final onBody = SummaryThemeColors.onBody(ctx);
+        final onSoft = SummaryThemeColors.onBodySoft(ctx);
         return Padding(
           padding: EdgeInsets.only(
             left: 16,
@@ -1646,10 +3477,10 @@ class _TagsRow extends ConsumerWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
+              Text(
                 'Tags',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: onBody,
                   fontSize: 18,
                   fontWeight: FontWeight.w600,
                 ),
@@ -1658,18 +3489,18 @@ class _TagsRow extends ConsumerWidget {
               Text(
                 'Comma-separated (e.g. work, ideas, health)',
                 style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.55),
+                  color: onSoft,
                   fontSize: 13,
                 ),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: controller,
-                style: const TextStyle(color: Colors.white),
+                style: TextStyle(color: onBody),
                 decoration: InputDecoration(
                   hintText: 'work, ideas',
                   hintStyle: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.35),
+                    color: onSoft.withValues(alpha: 0.65),
                   ),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -1719,7 +3550,7 @@ class _TagsRow extends ConsumerWidget {
                 fontSize: 11,
                 letterSpacing: 1.2,
                 fontWeight: FontWeight.w600,
-                color: Tokens.textMuted,
+                color: SummaryThemeColors.textMuted(context),
               ),
             ),
             const Spacer(),
@@ -1734,7 +3565,7 @@ class _TagsRow extends ConsumerWidget {
             'Add tags to organize in your library.',
             style: TextStyle(
               fontSize: 12,
-              color: Colors.white.withValues(alpha: 0.45),
+              color: SummaryThemeColors.onBodySoft(context),
             ),
           )
         else

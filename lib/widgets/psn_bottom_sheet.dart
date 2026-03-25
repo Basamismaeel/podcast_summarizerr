@@ -11,11 +11,14 @@ class PSNBottomSheet extends StatelessWidget {
     required this.child,
     this.title,
     this.showHandle = true,
+    /// Max fraction of usable viewport height (e.g. 0.72 for dense forms that must not scroll).
+    this.maxHeightFraction = 0.52,
   });
 
   final Widget child;
   final String? title;
   final bool showHandle;
+  final double maxHeightFraction;
 
   static Future<T?> show<T>({
     required BuildContext context,
@@ -50,57 +53,75 @@ class PSNBottomSheet extends StatelessWidget {
       _ => 18.0,
     };
 
-    return ClipRRect(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
-        child: Material(
-          color: cs.surfaceContainerHigh.withValues(alpha: 0.92),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (showHandle)
-                Padding(
-                  padding: const EdgeInsets.only(top: Tokens.spaceSm),
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: cs.onSurfaceVariant.withValues(alpha: 0.35),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
+    final mq = MediaQuery.of(context);
+    // Space above keyboard — never treat the sheet as “almost full screen”.
+    final availableMain = (mq.size.height - mq.viewInsets.bottom - mq.padding.vertical)
+        .clamp(240.0, mq.size.height);
+    final frac = maxHeightFraction.clamp(0.35, 0.92);
+    final maxSheetHeight = availableMain * frac;
+
+    final sheetRows = <Widget Function()>[
+      if (showHandle)
+        () => Padding(
+              padding: const EdgeInsets.only(top: Tokens.spaceSm),
+              child: Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: cs.onSurfaceVariant.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(2),
                   ),
-                ),
-              if (title != null)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    Tokens.spaceMd,
-                    Tokens.spaceMd,
-                    Tokens.spaceMd,
-                    Tokens.spaceSm,
-                  ),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      title!,
-                      style: tt.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-              Flexible(
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(
-                    Tokens.spaceMd,
-                    title == null ? Tokens.spaceMd : 0,
-                    Tokens.spaceMd,
-                    MediaQuery.of(context).viewPadding.bottom + Tokens.spaceMd,
-                  ),
-                  child: child,
                 ),
               ),
-            ],
+            ),
+      if (title != null)
+        () => Padding(
+              padding: const EdgeInsets.fromLTRB(
+                Tokens.spaceMd,
+                Tokens.spaceMd,
+                Tokens.spaceMd,
+                Tokens.spaceSm,
+              ),
+              child: Text(
+                title!,
+                style: tt.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.2,
+                ),
+              ),
+            ),
+      () => Padding(
+            padding: EdgeInsets.fromLTRB(
+              Tokens.spaceMd,
+              title == null ? Tokens.spaceMd : 0,
+              Tokens.spaceMd,
+              mq.viewPadding.bottom + Tokens.spaceMd,
+            ),
+            child: child,
+          ),
+    ];
+
+    return RepaintBoundary(
+      child: ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
+          child: Material(
+            color: cs.surfaceContainerHigh.withValues(alpha: 0.94),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxSheetHeight),
+              child: ListView.builder(
+                shrinkWrap: true,
+                physics: const ClampingScrollPhysics(),
+                padding: EdgeInsets.zero,
+                addAutomaticKeepAlives: false,
+                addRepaintBoundaries: false,
+                cacheExtent: 500,
+                itemCount: sheetRows.length,
+                itemBuilder: (context, index) => sheetRows[index](),
+              ),
+            ),
           ),
         ),
       ),

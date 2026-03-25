@@ -7,7 +7,10 @@ import 'package:intl/intl.dart';
 
 import '../../../core/artwork_color_service.dart';
 import '../../../core/haptics.dart';
+import '../../../core/session_display_kind.dart';
+import '../../../core/podcast_home_colors.dart';
 import '../../../core/snipd_style.dart';
+import '../../../core/summary_text_display.dart';
 import '../../../core/tokens.dart';
 import '../../../database/database.dart';
 import '../../../models/summary_style.dart';
@@ -51,6 +54,13 @@ int _snipBulletCount(ListeningSession s) {
     if (b != null && b.trim().isNotEmpty) n++;
   }
   return n;
+}
+
+String _previewLine(String raw) {
+  final p = parseSummaryBulletSections(raw);
+  final line = p.title ?? p.body;
+  final oneLine = line.replaceAll(RegExp(r'\s+'), ' ').trim();
+  return oneLine.isEmpty ? stripMarkdownForDisplay(raw) : oneLine;
 }
 
 class _SessionCardState extends State<SessionCard>
@@ -242,7 +252,7 @@ class _SessionCardState extends State<SessionCard>
           padding: const EdgeInsets.symmetric(vertical: 16),
           decoration: BoxDecoration(
             border: Border(
-              bottom: BorderSide(color: SnipdStyle.borderSubtle),
+              bottom: BorderSide(color: PodcastHomeColors.borderSubtle(context)),
             ),
           ),
           child: Row(
@@ -254,8 +264,11 @@ class _SessionCardState extends State<SessionCard>
                   child: Checkbox.adaptive(
                     value: widget.isSelected,
                     onChanged: (_) => widget.onSelectionToggle?.call(),
-                    activeColor: SnipdStyle.accent,
-                    checkColor: SnipdStyle.bgDeep,
+                    activeColor: PodcastHomeColors.accent(context),
+                    checkColor:
+                        Theme.of(context).brightness == Brightness.dark
+                            ? SnipdStyle.bgDeep
+                            : Theme.of(context).colorScheme.onPrimary,
                   ),
                 ),
               ],
@@ -280,13 +293,13 @@ class _SessionCardState extends State<SessionCard>
                               height: 18,
                               alignment: Alignment.center,
                               decoration: BoxDecoration(
-                                color: SnipdStyle.accent.withValues(alpha: 0.15),
+                                color: PodcastHomeColors.accent(context).withValues(alpha: 0.15),
                                 shape: BoxShape.circle,
                               ),
                               child: Icon(
                                 Icons.local_fire_department_rounded,
                                 size: 11,
-                                color: SnipdStyle.accent,
+                                color: PodcastHomeColors.accent(context),
                               ),
                             ),
                             const SizedBox(width: 6),
@@ -294,7 +307,7 @@ class _SessionCardState extends State<SessionCard>
                               snipLabel,
                               style: tt.labelSmall?.copyWith(
                                 fontSize: 12,
-                                color: SnipdStyle.accent,
+                                color: PodcastHomeColors.accent(context),
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -310,7 +323,7 @@ class _SessionCardState extends State<SessionCard>
                       style: tt.titleMedium?.copyWith(
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
-                        color: SnipdStyle.title,
+                        color: PodcastHomeColors.title(context),
                         height: 1.25,
                       ),
                       maxLines: 2,
@@ -320,7 +333,7 @@ class _SessionCardState extends State<SessionCard>
                     Text(
                       s.artist,
                       style: tt.bodySmall?.copyWith(
-                        color: SnipdStyle.meta,
+                        color: PodcastHomeColors.meta(context),
                         fontSize: 12,
                       ),
                       maxLines: 1,
@@ -342,7 +355,7 @@ class _SessionCardState extends State<SessionCard>
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: SnipdStyle.meta
+                                  color: PodcastHomeColors.meta(context)
                                       .withValues(alpha: 0.12),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
@@ -350,7 +363,7 @@ class _SessionCardState extends State<SessionCard>
                                   t,
                                   style: tt.labelSmall?.copyWith(
                                     fontSize: 10,
-                                    color: SnipdStyle.meta,
+                                    color: PodcastHomeColors.meta(context),
                                   ),
                                 ),
                               ),
@@ -363,9 +376,9 @@ class _SessionCardState extends State<SessionCard>
                     if (hasPreview) ...[
                       const SizedBox(height: 8),
                       Text(
-                        bulletPreview,
+                        _previewLine(bulletPreview),
                         style: tt.bodySmall?.copyWith(
-                          color: SnipdStyle.meta,
+                          color: PodcastHomeColors.meta(context),
                           height: 1.25,
                           fontStyle: FontStyle.italic,
                         ),
@@ -466,12 +479,14 @@ class _SessionCardState extends State<SessionCard>
             clipBehavior: Clip.none,
             children: [
               Positioned.fill(
-                child: ClipRRect(
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                    child: Material(
-                      color: Colors.white.withValues(alpha: 0.06),
-                      child: const SizedBox.expand(),
+                child: RepaintBoundary(
+                  child: ClipRRect(
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                      child: Material(
+                        color: Colors.white.withValues(alpha: 0.06),
+                        child: const SizedBox.expand(),
+                      ),
                     ),
                   ),
                 ),
@@ -580,7 +595,7 @@ class _SessionCardState extends State<SessionCard>
                                           },
                                           blendMode: BlendMode.dstIn,
                                           child: Text(
-                                            bulletPreview,
+                                            _previewLine(bulletPreview),
                                             style: tt.bodySmall?.copyWith(
                                               color: cs.onSurfaceVariant,
                                               height: 1.25,
@@ -702,7 +717,9 @@ class _SnipdMetaRow extends StatelessWidget {
     final dur = session.endTimeSec == null
         ? 0
         : ((session.endTimeSec! - session.startTimeSec) / 60).round();
-    final durationPart = dur > 0 ? '$dur min' : '—';
+    final durationPart = SessionDisplayKind.isChapterBased(session)
+        ? SessionDisplayKind.shortMetaLabel(session)
+        : (dur > 0 ? '$dur min' : '—');
 
     return Wrap(
       spacing: 8,
@@ -712,13 +729,13 @@ class _SnipdMetaRow extends StatelessWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: SnipdStyle.chipFill,
+            color: PodcastHomeColors.chipFill(context),
             borderRadius: BorderRadius.circular(6),
           ),
           child: Text(
             status.label,
             style: tt.labelSmall?.copyWith(
-              color: SnipdStyle.accent,
+              color: PodcastHomeColors.accent(context),
               fontWeight: FontWeight.w600,
               fontSize: 11,
             ),
@@ -727,18 +744,18 @@ class _SnipdMetaRow extends StatelessWidget {
         Text(
           date,
           style: tt.labelSmall?.copyWith(
-            color: SnipdStyle.meta,
+            color: PodcastHomeColors.meta(context),
             fontSize: 12,
           ),
         ),
         Text(
           '·',
-          style: TextStyle(color: SnipdStyle.meta, fontSize: 12),
+          style: TextStyle(color: PodcastHomeColors.meta(context), fontSize: 12),
         ),
         Text(
           durationPart,
           style: tt.labelSmall?.copyWith(
-            color: SnipdStyle.meta,
+            color: PodcastHomeColors.meta(context),
             fontSize: 12,
           ),
         ),
@@ -766,39 +783,52 @@ class _MetadataRowStyled extends StatelessWidget {
       DateTime.fromMillisecondsSinceEpoch(session.createdAt),
     );
     final dur = _durationMinutes(session);
-    final durationPart = dur > 0 ? '$dur min' : '—';
-    final range = _rangeLabel(session);
+    final chapterBased = SessionDisplayKind.isChapterBased(session);
+    final durationPart = chapterBased
+        ? null
+        : (dur > 0 ? '$dur min' : '—');
+    final metaMain = chapterBased
+        ? SessionDisplayKind.shortMetaLabel(session)
+        : _rangeLabel(session);
 
     return Row(
       children: [
         Icon(_saveMethodIcon(saveMethod), size: 14, color: cs.onSurfaceVariant),
         const SizedBox(width: 6),
-        Icon(Icons.schedule_rounded, size: 14, color: cs.onSurfaceVariant),
+        Icon(
+          chapterBased ? Icons.menu_book_outlined : Icons.schedule_rounded,
+          size: 14,
+          color: cs.onSurfaceVariant,
+        ),
         const SizedBox(width: 4),
         Expanded(
           child: Text(
-            range,
+            metaMain,
             style: tt.labelSmall?.copyWith(
-              fontFamily: 'monospace',
-              fontFeatures: const [FontFeature.tabularFigures()],
+              fontFamily:
+                  chapterBased ? null : 'monospace',
+              fontFeatures: chapterBased
+                  ? null
+                  : const [FontFeature.tabularFigures()],
               color: cs.onSurfaceVariant,
             ),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
         ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            color: cs.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(Tokens.radiusFull),
+        if (durationPart != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(Tokens.radiusFull),
+            ),
+            child: Text(
+              durationPart,
+              style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant),
+            ),
           ),
-          child: Text(
-            durationPart,
-            style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant),
-          ),
-        ),
-        const SizedBox(width: 6),
+        if (durationPart != null) const SizedBox(width: 6),
         Text(
           date,
           style: tt.labelSmall?.copyWith(color: cs.onSurfaceVariant),

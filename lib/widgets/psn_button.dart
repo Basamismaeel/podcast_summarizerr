@@ -3,7 +3,14 @@ import 'package:flutter/material.dart';
 import '../core/haptics.dart';
 import '../core/tokens.dart';
 
-enum ButtonVariant { primary, secondary, ghost, danger }
+enum ButtonVariant {
+  primary,
+  /// Deep navy fill + soft shadow (premium primary actions).
+  primaryDark,
+  secondary,
+  ghost,
+  danger,
+}
 
 enum ButtonSize { sm, md, lg }
 
@@ -14,6 +21,7 @@ class PSNButton extends StatelessWidget {
     required this.label,
     this.onTap,
     this.isLoading = false,
+    this.isDisabled = false,
     this.variant = ButtonVariant.primary,
     this.size = ButtonSize.md,
     this.icon,
@@ -24,6 +32,8 @@ class PSNButton extends StatelessWidget {
   final String label;
   final VoidCallback? onTap;
   final bool isLoading;
+  /// When true, the button is non-interactive (same as null [onTap]).
+  final bool isDisabled;
   final ButtonVariant variant;
   final ButtonSize size;
   final Widget? icon;
@@ -31,7 +41,7 @@ class PSNButton extends StatelessWidget {
   /// Accessibility for icon-only usage.
   final String? semanticLabel;
 
-  bool get _disabled => onTap == null || isLoading;
+  bool get _disabled => isDisabled || onTap == null || isLoading;
 
   EdgeInsets get _pad => switch (size) {
         ButtonSize.sm => const EdgeInsets.symmetric(horizontal: 12),
@@ -56,10 +66,12 @@ class PSNButton extends StatelessWidget {
             height: 22,
             child: CircularProgressIndicator(
               strokeWidth: 2,
-              color: variant == ButtonVariant.primary ||
-                      variant == ButtonVariant.danger
-                  ? cs.onPrimary
-                  : cs.primary,
+              color: switch (variant) {
+                ButtonVariant.primary => cs.onPrimary,
+                ButtonVariant.primaryDark => Colors.white,
+                ButtonVariant.danger => cs.onError,
+                _ => cs.primary,
+              },
             ),
           )
         : Row(
@@ -96,6 +108,70 @@ class PSNButton extends StatelessWidget {
             foregroundColor: cs.onPrimary,
           ),
           child: child,
+        );
+        break;
+      case ButtonVariant.primaryDark:
+        const top = Color(0xFF1D4ED8);
+        const bottom = Color(0xFF172554);
+        button = Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: _disabled ? null : _handleTap,
+            borderRadius: BorderRadius.circular(14),
+            child: Ink(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: _disabled
+                      ? [cs.surfaceContainerHighest, cs.surfaceContainerHigh]
+                      : const [top, bottom],
+                ),
+                boxShadow: _disabled
+                    ? null
+                    : [
+                        BoxShadow(
+                          color: bottom.withValues(alpha: 0.55),
+                          blurRadius: 20,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+              ),
+              child: Align(
+                alignment: Alignment.center,
+                widthFactor: fullWidth ? null : 1,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    minWidth: Tokens.minTap,
+                    minHeight: 52,
+                  ),
+                  child: Padding(
+                    padding: _pad,
+                    child: Center(
+                      child: DefaultTextStyle.merge(
+                        style: tt.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: _disabled
+                              ? cs.onSurfaceVariant
+                              : Colors.white,
+                        ),
+                        child: IconTheme.merge(
+                          data: IconThemeData(
+                            size: 20,
+                            color: _disabled
+                                ? cs.onSurfaceVariant
+                                : Colors.white,
+                          ),
+                          child: child,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         );
         break;
       case ButtonVariant.secondary:

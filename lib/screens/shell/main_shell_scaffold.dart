@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/haptics.dart';
-import '../../core/snipd_style.dart';
+import '../../core/podcast_home_colors.dart';
 import '../../core/moments_stats_service.dart';
 import '../../database/database.dart';
 import '../../models/summary_style.dart';
@@ -58,7 +58,7 @@ class _MainShellScaffoldState extends ConsumerState<MainShellScaffold> {
     });
 
     return Scaffold(
-      backgroundColor: SnipdStyle.bgDeep,
+      backgroundColor: PodcastHomeColors.scaffold(context),
       body: widget.navigationShell,
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
@@ -71,26 +71,30 @@ class _MainShellScaffoldState extends ConsumerState<MainShellScaffold> {
                 onTap: () => context.push('/summary/${summarizingSession.id}'),
               ),
             ),
-          ClipRect(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: SnipdStyle.bottomNavBg,
-                  border: Border(
-                    top: BorderSide(color: SnipdStyle.borderSubtle),
+          RepaintBoundary(
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: PodcastHomeColors.bottomNavBg(context),
+                    border: Border(
+                      top: BorderSide(
+                        color: PodcastHomeColors.borderSubtle(context),
+                      ),
+                    ),
                   ),
-                ),
-                child: _MainBottomNav(
-                  currentIndex: widget.navigationShell.currentIndex,
-                  onSelect: (index) {
-                    higLightTap();
-                    widget.navigationShell.goBranch(
-                      index,
-                      initialLocation:
-                          index == widget.navigationShell.currentIndex,
-                    );
-                  },
+                  child: _MainBottomNav(
+                    currentIndex: widget.navigationShell.currentIndex,
+                    onSelect: (index) {
+                      higLightTap();
+                      widget.navigationShell.goBranch(
+                        index,
+                        initialLocation:
+                            index == widget.navigationShell.currentIndex,
+                      );
+                    },
+                  ),
                 ),
               ),
             ),
@@ -162,7 +166,9 @@ class _MainBottomNav extends StatelessWidget {
     required int index,
   }) {
     final selected = currentIndex == index;
-    final color = selected ? SnipdStyle.accent : SnipdStyle.meta;
+    final color = selected
+        ? PodcastHomeColors.accent(context)
+        : PodcastHomeColors.meta(context);
     return Expanded(
       child: Tooltip(
         message: _tooltips[index],

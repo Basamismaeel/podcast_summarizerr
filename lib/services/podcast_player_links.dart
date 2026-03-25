@@ -276,4 +276,25 @@ class PodcastPlayerLinks {
         (u.host.contains('podcasts.apple.com') ||
             u.host.contains('itunes.apple.com'));
   }
+
+  /// Apple Podcasts web URLs support [`t`]=start offset in **seconds**.
+  static Uri? applePodcastsUriWithTime(String? episodeUrl, int positionSec) {
+    if (episodeUrl == null || episodeUrl.isEmpty) return null;
+    final uri = Uri.tryParse(episodeUrl.trim());
+    if (uri == null || !looksLikeApplePodcasts(episodeUrl)) return null;
+    final t = positionSec.clamp(0, 1 << 30);
+    final q = Map<String, String>.from(uri.queryParameters);
+    q['t'] = '$t';
+    return uri.replace(queryParameters: q);
+  }
+
+  /// Opens Apple Podcasts at [positionSec] when the link is an Apple episode URL.
+  static Future<bool> openApplePodcastsAt(
+    String? episodeUrl,
+    int positionSec,
+  ) {
+    final u = applePodcastsUriWithTime(episodeUrl, positionSec);
+    if (u == null) return openApplePodcasts(episodeUrl);
+    return openApplePodcasts(u.toString());
+  }
 }

@@ -37,8 +37,10 @@ class _ManualEntryScreenState extends ConsumerState<ManualEntryScreen> {
     }
   }
 
-  /// Default so pipeline always gets an explicit window (not “whole episode from 0”).
   String _selectedRange = '0–15 min';
+
+  /// Audiobook / book-style saves skip time-range UI (chapters drive the summary).
+  bool _audiobookMode = false;
 
   @override
   void dispose() {
@@ -49,25 +51,62 @@ class _ManualEntryScreenState extends ConsumerState<ManualEntryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final tt = Theme.of(context).textTheme;
+    final rows = _entryRowFactories(context);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Add episode'),
         leading: const BackButton(),
       ),
-      body: ListView(
+      body: ListView.builder(
         padding: const EdgeInsets.all(Tokens.spaceMd),
         physics: const BouncingScrollPhysics(
           parent: AlwaysScrollableScrollPhysics(),
         ),
-        children: [
-          Text(
+        addAutomaticKeepAlives: false,
+        addRepaintBoundaries: false,
+        cacheExtent: 500,
+        itemCount: rows.length,
+        itemBuilder: (context, index) => rows[index](),
+      ),
+    );
+  }
+
+  bool get _canSubmit => _audiobookMode
+      ? _titleController.text.isNotEmpty
+      : _titleController.text.isNotEmpty && _artistController.text.isNotEmpty;
+
+  List<Widget Function()> _entryRowFactories(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    return [
+      () => Text(
             'What were you listening to?',
             style: tt.titleLarge?.copyWith(fontWeight: FontWeight.w600),
           ),
-          const SizedBox(height: Tokens.spaceMd),
-          FutureBuilder<List<String>>(
+      () => const SizedBox(height: Tokens.spaceSm),
+      () => SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment<bool>(
+                value: false,
+                label: Text('Podcast'),
+                icon: Icon(Icons.podcasts_outlined, size: 18),
+              ),
+              ButtonSegment<bool>(
+                value: true,
+                label: Text('Audiobook'),
+                icon: Icon(Icons.menu_book_outlined, size: 18),
+              ),
+            ],
+            selected: {_audiobookMode},
+            onSelectionChanged: (set) {
+              higLightTap();
+              setState(() => _audiobookMode = set.first);
+            },
+            showSelectedIcon: false,
+          ),
+      () => const SizedBox(height: Tokens.spaceMd),
+      () => FutureBuilder<List<String>>(
             future: MomentsStatsService.getRecentManualPodcasts(),
             builder: (context, snap) {
               final recent = snap.data ?? [];
@@ -79,7 +118,7 @@ class _ManualEntryScreenState extends ConsumerState<ManualEntryScreen> {
                     'Recently searched',
                     style: tt.titleSmall?.copyWith(
                       fontWeight: FontWeight.w600,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      color: cs.onSurfaceVariant,
                     ),
                   ),
                   const SizedBox(height: Tokens.spaceSm),
@@ -90,6 +129,10 @@ class _ManualEntryScreenState extends ConsumerState<ManualEntryScreen> {
                         .map(
                           (name) => ActionChip(
                             label: Text(name),
+                            backgroundColor: cs.surfaceContainerHighest,
+                            side: BorderSide(
+                              color: cs.outlineVariant.withValues(alpha: 0.5),
+                            ),
                             onPressed: () {
                               higLightTap();
                               setState(() {
@@ -105,72 +148,102 @@ class _ManualEntryScreenState extends ConsumerState<ManualEntryScreen> {
               );
             },
           ),
-          PSNTextField(
+      () => PSNTextField(
             placeholder: 'Episode title',
             controller: _titleController,
           ),
-          const SizedBox(height: Tokens.spaceSm),
-          PSNTextField(
-            placeholder: 'Podcast / show name',
+      () => const SizedBox(height: Tokens.spaceSm),
+      () => PSNTextField(
+            placeholder:
+                _audiobookMode ? 'Author (optional)' : 'Podcast / show name',
             controller: _artistController,
           ),
-          const SizedBox(height: Tokens.spaceLg),
-          Text(
-            'Approximate time range',
-            style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: Tokens.spaceSm),
-          Text(
-            'Tap the waveform to pick where you were in the episode.',
-            style: tt.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+      if (!_audiobookMode) ...[
+        () => const SizedBox(height: Tokens.spaceMd),
+        () => Text(
+              'Approximate time range',
+              style: tt.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface,
+              ),
             ),
-          ),
-          const SizedBox(height: Tokens.spaceSm),
-          _WaveformScrubber(
-            onSegmentChosen: (label) {
-              setState(() => _selectedRange = label);
-            },
-          ),
-          const SizedBox(height: Tokens.spaceMd),
-          Wrap(
-            spacing: Tokens.spaceSm,
-            runSpacing: Tokens.spaceSm,
-            children: ['0–15 min', '15–30 min', '30–60 min', '60+ min']
-                .map((range) => _RangeChip(
-                      label: range,
-                      selected: _selectedRange == range,
-                      onTap: () => setState(() => _selectedRange = range),
-                    ))
-                .toList(),
-          ),
-          const SizedBox(height: Tokens.spaceXl),
-          PSNButton(
+        () => const SizedBox(height: 6),
+        () => Text(
+              'Tap the waveform, then refine with a chip.',
+              style: tt.bodySmall?.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+        () => const SizedBox(height: Tokens.spaceSm),
+        () => Material(
+              color: cs.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(Tokens.radiusMd),
+              clipBehavior: Clip.antiAlias,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: _WaveformScrubber(
+                  onSegmentChosen: (label) {
+                    setState(() => _selectedRange = label);
+                  },
+                ),
+              ),
+            ),
+        () => const SizedBox(height: Tokens.spaceSm),
+        () => Wrap(
+              spacing: Tokens.spaceSm,
+              runSpacing: Tokens.spaceSm,
+              children: ['0–15 min', '15–30 min', '30–60 min', '60+ min']
+                  .map((range) => _RangeChip(
+                        label: range,
+                        selected: _selectedRange == range,
+                        onTap: () => setState(() => _selectedRange = range),
+                      ))
+                  .toList(),
+            ),
+      ] else ...[
+        () => const SizedBox(height: Tokens.spaceMd),
+        () => Text(
+              'No time range — paste or open an Audible link from Home to match the catalog, or summarize from a book link.',
+              style: tt.bodySmall?.copyWith(
+                color: cs.onSurfaceVariant,
+                height: 1.35,
+              ),
+            ),
+      ],
+      () => const SizedBox(height: Tokens.spaceXl),
+      () => PSNButton(
             label: 'Save & summarize',
             fullWidth: true,
             onTap: _canSubmit ? _submit : null,
           ),
-        ],
-      ),
-    );
+    ];
   }
-
-  bool get _canSubmit =>
-      _titleController.text.isNotEmpty && _artistController.text.isNotEmpty;
 
   Future<void> _submit() async {
     final actions = ref.read(sessionActionsProvider);
     final artist = _artistController.text.trim();
-    final bounds = _boundsForRangeLabel(_selectedRange);
-    await MomentsStatsService.recordManualPodcast(artist);
-    await actions.createAndSummarize(
-      title: _titleController.text.trim(),
-      artist: artist,
-      saveMethod: SaveMethod.manual,
-      startTimeSec: bounds.start,
-      endTimeSec: bounds.end,
-      rangeLabel: _selectedRange,
-    );
+    if (_audiobookMode) {
+      await actions.createAndSummarize(
+        title: _titleController.text.trim(),
+        artist: artist.isNotEmpty ? artist : 'Audiobook',
+        saveMethod: SaveMethod.manual,
+        startTimeSec: 0,
+        endTimeSec: null,
+        rangeLabel: null,
+        sourceApp: 'audible',
+      );
+    } else {
+      final bounds = _boundsForRangeLabel(_selectedRange);
+      await MomentsStatsService.recordManualPodcast(artist);
+      await actions.createAndSummarize(
+        title: _titleController.text.trim(),
+        artist: artist,
+        saveMethod: SaveMethod.manual,
+        startTimeSec: bounds.start,
+        endTimeSec: bounds.end,
+        rangeLabel: _selectedRange,
+      );
+    }
     if (mounted) await PSNHaptics.momentSaved();
     if (mounted) context.pop();
   }
@@ -208,20 +281,20 @@ class _WaveformScrubber extends StatelessWidget {
             onSegmentChosen(_segments.last.$1);
           },
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(Tokens.radiusMd),
+            borderRadius: BorderRadius.circular(Tokens.radiusSm),
             child: SizedBox(
-              height: 56,
+              height: 44,
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: List.generate(48, (i) {
-                  final h = 12.0 + (i % 7) * 4.0 + (i % 3) * 3.0;
+                  final h = 10.0 + (i % 7) * 3.0 + (i % 3) * 2.0;
                   return Expanded(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 1),
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           color: cs.primary.withValues(
-                            alpha: 0.25 + (i % 5) * 0.08,
+                            alpha: 0.18 + (i % 5) * 0.06,
                           ),
                           borderRadius: BorderRadius.circular(2),
                         ),
@@ -255,28 +328,35 @@ class _RangeChip extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
 
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(Tokens.radiusFull),
-      child: AnimatedContainer(
-        duration: Tokens.durationFast,
-        curve: Tokens.springCurve,
-        padding: const EdgeInsets.symmetric(
-          horizontal: Tokens.spaceMd,
-          vertical: 10,
-        ),
-        decoration: BoxDecoration(
-          color: selected ? cs.primaryContainer : cs.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(Tokens.radiusFull),
-          border: Border.all(
-            color: selected ? cs.primary : cs.outlineVariant,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(Tokens.radiusFull),
+        child: AnimatedContainer(
+          duration: Tokens.durationFast,
+          curve: Tokens.springCurve,
+          padding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 8,
           ),
-        ),
-        child: Text(
-          label,
-          style: tt.bodySmall?.copyWith(
-            color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+          decoration: BoxDecoration(
+            color: selected
+                ? cs.primaryContainer
+                : cs.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(Tokens.radiusFull),
+            border: Border.all(
+              color: selected
+                  ? cs.primary.withValues(alpha: 0.35)
+                  : cs.outlineVariant.withValues(alpha: 0.45),
+            ),
+          ),
+          child: Text(
+            label,
+            style: tt.labelMedium?.copyWith(
+              color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            ),
           ),
         ),
       ),

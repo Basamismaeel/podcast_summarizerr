@@ -30,32 +30,33 @@ class PSNCard extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
 
     if (_glass) {
-      final clip = ClipRRect(
-        borderRadius: BorderRadius.circular(Tokens.radiusMd),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: Material(
-            color: Colors.white.withValues(alpha: 0.05),
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(Tokens.radiusMd),
-              side: BorderSide(
-                color: Colors.white.withValues(alpha: 0.12),
-                width: 1,
+      return RepaintBoundary(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(Tokens.radiusMd),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Material(
+              color: Colors.white.withValues(alpha: 0.05),
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(Tokens.radiusMd),
+                side: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.12),
+                  width: 1,
+                ),
               ),
-            ),
-            child: InkWell(
-              onTap: onTap,
-              borderRadius: BorderRadius.circular(Tokens.radiusMd),
-              child: Padding(
-                padding: padding,
-                child: child,
+              child: InkWell(
+                onTap: onTap,
+                borderRadius: BorderRadius.circular(Tokens.radiusMd),
+                child: Padding(
+                  padding: padding,
+                  child: child,
+                ),
               ),
             ),
           ),
         ),
       );
-      return clip;
     }
 
     final material = Material(

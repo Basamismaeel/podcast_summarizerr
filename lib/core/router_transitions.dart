@@ -9,8 +9,8 @@ CustomTransitionPage<T> psnTransitionPage<T>({
   return CustomTransitionPage<T>(
     key: key,
     child: child,
-    transitionDuration: const Duration(milliseconds: 300),
-    reverseTransitionDuration: const Duration(milliseconds: 250),
+    transitionDuration: const Duration(milliseconds: 240),
+    reverseTransitionDuration: const Duration(milliseconds: 200),
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
       final curved = CurvedAnimation(
         parent: animation,

@@ -61,66 +61,68 @@ class _RecordingIndicatorState extends State<RecordingIndicator>
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(Tokens.radiusMd),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: Tokens.spaceMd + 4,
-            vertical: Tokens.spaceSm,
-          ),
-          decoration: BoxDecoration(
-            color: cs.errorContainer.withValues(alpha: 0.55),
-            borderRadius: BorderRadius.circular(Tokens.radiusMd),
-            border: Border.all(color: cs.error.withValues(alpha: 0.45)),
-          ),
-          child: Row(
-            children: [
-              FadeTransition(
-                opacity: _opacity,
-                child: Container(
-                  width: 10,
-                  height: 10,
-                  decoration: BoxDecoration(
-                    color: cs.error,
-                    shape: BoxShape.circle,
+    return RepaintBoundary(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(Tokens.radiusMd),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Tokens.spaceMd + 4,
+              vertical: Tokens.spaceSm,
+            ),
+            decoration: BoxDecoration(
+              color: cs.errorContainer.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(Tokens.radiusMd),
+              border: Border.all(color: cs.error.withValues(alpha: 0.45)),
+            ),
+            child: Row(
+              children: [
+                FadeTransition(
+                  opacity: _opacity,
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: cs.error,
+                      shape: BoxShape.circle,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: Tokens.spaceSm),
-              Text(
-                'Recording',
-                style: tt.bodySmall?.copyWith(
-                  color: cs.error,
-                  fontWeight: FontWeight.w600,
+                const SizedBox(width: Tokens.spaceSm),
+                Text(
+                  'Recording',
+                  style: tt.bodySmall?.copyWith(
+                    color: cs.error,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-              const SizedBox(width: Tokens.spaceSm),
-              Expanded(
-                child: Text(
-                  widget.session.title,
-                  style: tt.bodySmall?.copyWith(color: cs.onSurface),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                const SizedBox(width: Tokens.spaceSm),
+                Expanded(
+                  child: Text(
+                    widget.session.title,
+                    style: tt.bodySmall?.copyWith(color: cs.onSurface),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-              const SizedBox(width: Tokens.spaceSm),
-              Text(
-                _elapsedLabel,
-                style: tt.labelSmall?.copyWith(
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                  fontFamily: 'monospace',
+                const SizedBox(width: Tokens.spaceSm),
+                Text(
+                  _elapsedLabel,
+                  style: tt.labelSmall?.copyWith(
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                    fontFamily: 'monospace',
+                  ),
                 ),
-              ),
-              const SizedBox(width: Tokens.spaceSm),
-              PSNButton(
-                label: 'Stop',
-                size: ButtonSize.sm,
-                variant: ButtonVariant.danger,
-                onTap: widget.onStop,
-              ),
-            ],
+                const SizedBox(width: Tokens.spaceSm),
+                PSNButton(
+                  label: 'Stop',
+                  size: ButtonSize.sm,
+                  variant: ButtonVariant.danger,
+                  onTap: widget.onStop,
+                ),
+              ],
+            ),
           ),
         ),
       ),

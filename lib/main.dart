@@ -81,6 +81,7 @@ void _mergeApiKeysFromPlatform() {
     'DEEPGRAM_API_KEY',
     'TADDY_API_KEY',
     'TADDY_USER_ID',
+    'GOOGLE_BOOKS_API_KEY',
   ];
   for (final key in keys) {
     final fromPlat = normalizeDotenvValue(Platform.environment[key]);
@@ -92,6 +93,11 @@ void _mergeApiKeysFromPlatform() {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  assert(() {
+    debugProfileBuildsEnabled = true;
+    return true;
+  }());
 
   await _loadDotenv();
 

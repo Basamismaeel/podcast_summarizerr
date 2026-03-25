@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 /// Circular liquid-style progress with sine waves (premium “thinking” state).
@@ -91,12 +92,17 @@ class _CenterAvatar extends StatelessWidget {
         (u.startsWith('http://') || u.startsWith('https://'));
     if (has) {
       return ClipOval(
-        child: Image.network(
-          u,
+        child: CachedNetworkImage(
+          imageUrl: u,
           width: size,
           height: size,
           fit: BoxFit.cover,
-          errorBuilder: (context, error, stack) => _initials(),
+          placeholder: (context, url) => Container(
+            width: size,
+            height: size,
+            color: const Color(0xFF1A1A1A),
+          ),
+          errorWidget: (context, url, error) => _initials(),
         ),
       );
     }

@@ -247,20 +247,23 @@ class _MacMenuBarAppState extends ConsumerState<MacMenuBarApp>
               ),
               const SizedBox(height: 8),
               Expanded(
-                child: ListView(
-                  children: recent
-                      .map(
-                        (s) => Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            '• ${s.title} · ${SessionStatus.fromJson(s.status).label}',
-                            style: const TextStyle(color: Colors.white),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      )
-                      .toList(),
+                child: ListView.builder(
+                  addAutomaticKeepAlives: false,
+                  addRepaintBoundaries: false,
+                  cacheExtent: 500,
+                  itemCount: recent.length,
+                  itemBuilder: (context, index) {
+                    final s = recent[index];
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        '• ${s.title} · ${SessionStatus.fromJson(s.status).label}',
+                        style: const TextStyle(color: Colors.white),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    );
+                  },
                 ),
               ),
               const SizedBox(height: 6),

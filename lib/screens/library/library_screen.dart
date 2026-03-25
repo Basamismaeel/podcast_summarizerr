@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../core/snipd_style.dart';
+import '../../core/podcast_home_colors.dart';
 import '../../core/tokens.dart';
 
 /// Placeholder for future playlists / collections. Same tab shell as Home.
@@ -13,37 +13,50 @@ class LibraryScreen extends StatelessWidget {
     final tt = Theme.of(context).textTheme;
 
     return Scaffold(
-      backgroundColor: SnipdStyle.bgDeep,
+      backgroundColor: PodcastHomeColors.scaffold(context),
       appBar: AppBar(
         title: const Text('Library'),
         automaticallyImplyLeading: false,
-        backgroundColor: SnipdStyle.bgDeep,
-        foregroundColor: SnipdStyle.title,
+        backgroundColor: PodcastHomeColors.scaffold(context),
+        foregroundColor: PodcastHomeColors.title(context),
         surfaceTintColor: Colors.transparent,
       ),
-      body: ListView(
+      body: ListView.builder(
         padding: const EdgeInsets.all(Tokens.spaceMd),
-        children: [
-          Text(
-            'Organize your moments',
-            style: tt.titleLarge?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: SnipdStyle.title,
-            ),
-          ),
-          const SizedBox(height: Tokens.spaceSm),
-          Text(
-            'Collections, playlists, and exports are on the way. '
-            'For now, all saved moments live on the Home tab.',
-            style: tt.bodyLarge?.copyWith(color: SnipdStyle.meta),
-          ),
-          const SizedBox(height: Tokens.spaceLg),
-          FilledButton.tonalIcon(
-            onPressed: () => context.go('/'),
-            icon: const Icon(Icons.home_rounded),
-            label: const Text('Go to Home'),
-          ),
-        ],
+        addAutomaticKeepAlives: false,
+        addRepaintBoundaries: false,
+        cacheExtent: 500,
+        itemCount: 5,
+        itemBuilder: (context, index) {
+          switch (index) {
+            case 0:
+              return Text(
+                'Organize your moments',
+                style: tt.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: PodcastHomeColors.title(context),
+                ),
+              );
+            case 1:
+              return const SizedBox(height: Tokens.spaceSm);
+            case 2:
+              return Text(
+                'Collections, playlists, and exports are on the way. '
+                'For now, all saved moments live on the Home tab.',
+                style: tt.bodyLarge?.copyWith(
+                  color: PodcastHomeColors.meta(context),
+                ),
+              );
+            case 3:
+              return const SizedBox(height: Tokens.spaceLg);
+            default:
+              return FilledButton.tonalIcon(
+                onPressed: () => context.go('/'),
+                icon: const Icon(Icons.home_rounded),
+                label: const Text('Go to Home'),
+              );
+          }
+        },
       ),
     );
   }

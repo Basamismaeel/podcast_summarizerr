@@ -15,6 +15,10 @@ import '../database/session_dao.dart';
 import '../models/episode_metadata.dart';
 import '../models/pipeline_models.dart';
 import '../models/summary_style.dart';
+import 'audible_book_service.dart';
+import 'gutenberg_book_service.dart';
+import 'open_library_service.dart';
+import 'wikipedia_summary_service.dart';
 import 'spotify_episode_service.dart';
 import 'transcription_service.dart';
 
@@ -30,6 +34,9 @@ class CloudPipelineService {
   static const _geminiKeyFromDefine =
       String.fromEnvironment('GEMINI_API_KEY', defaultValue: '');
 
+  static const _googleBooksKeyFromDefine =
+      String.fromEnvironment('GOOGLE_BOOKS_API_KEY', defaultValue: '');
+
   String get _geminiKey {
     final raw = _geminiKeyFromDefine.isNotEmpty
         ? normalizeDotenvValue(_geminiKeyFromDefine)
@@ -38,6 +45,12 @@ class CloudPipelineService {
   }
   String get _taddyKey => normalizeDotenvValue(dotenv.env['TADDY_API_KEY']);
   String get _taddyUserId => normalizeDotenvValue(dotenv.env['TADDY_USER_ID']);
+
+  String get _googleBooksKey {
+    final fromDef = normalizeDotenvValue(_googleBooksKeyFromDefine);
+    if (fromDef.isNotEmpty) return fromDef;
+    return normalizeDotenvValue(dotenv.env['GOOGLE_BOOKS_API_KEY']);
+  }
 
   /// `v1beta` is the default for AI Studio `generateContent`. Override with `GEMINI_API_VERSION=v1` in `.env` if needed.
   String get _geminiApiVersion {
@@ -153,6 +166,23 @@ class CloudPipelineService {
         SummaryStyle.insights;
 
     await _updateSessionStatus(sessionId, SessionStatus.summarizing);
+
+    if (_isAudibleSession(session)) {
+      await _runAudiblePipeline(sessionId, session, summaryStyle);
+      return;
+    }
+
+    final gutenbergTextUrl = _resolveGutenbergTextUrl(session, episodeHint);
+    if (gutenbergTextUrl != null && gutenbergTextUrl.isNotEmpty) {
+      await _runGutenbergPipeline(
+        sessionId,
+        session,
+        summaryStyle,
+        episodeHint ?? const {},
+        gutenbergTextUrl,
+      );
+      return;
+    }
 
     // ── STEP 2: Resolve episode metadata ─────────────────────────────────
     // Apple: iTunes lookup by podcast + episode trackId.
@@ -323,6 +353,842 @@ class CloudPipelineService {
     await MomentsStatsService.incrementSummariesDone();
   }
 
+  bool _isAudibleSession(ListeningSession session) {
+    if (session.sourceApp == 'audible') return true;
+    final blob = <String?>[
+      session.episodeUrl,
+      session.sourceShareUrl,
+      session.title,
+    ].whereType<String>().join(' ');
+    final lower = blob.toLowerCase();
+    if (lower.contains('audible')) return true;
+    if (blob.contains('adbl.co')) return true;
+    return false;
+  }
+
+  /// Audible: ASIN → Audnexus metadata + chapters → Gemini (no audio transcript).
+  Future<void> _runAudiblePipeline(
+    String sessionId,
+    ListeningSession session,
+    SummaryStyle summaryStyle,
+  ) async {
+    final urlCandidates = <String>[
+      ...<String?>[
+        session.sourceShareUrl,
+        session.episodeUrl,
+        session.title,
+      ].whereType<String>().map((s) => s.trim()).where((s) => s.isNotEmpty),
+    ];
+
+    // #region agent log
+    agentNdjsonLog(
+      hypothesisId: 'H1',
+      location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+      message: 'Audible URL candidates before extractAsin',
+      data: <String, Object?>{
+        'n': urlCandidates.length,
+        'summaries': urlCandidates.map((u) {
+          final uri = Uri.tryParse(u);
+          final lower = u.toLowerCase();
+          return <String, Object?>{
+            'len': u.length,
+            'host': uri?.host ?? '',
+            'pathSegs': uri?.pathSegments.length ?? 0,
+            'http': lower.startsWith('http://') || lower.startsWith('https://'),
+            'audHost':
+                lower.contains('audible.') || lower.contains('adbl.co'),
+          };
+        }).toList(),
+      },
+      runId: 'asin-debug-v2',
+    );
+    // #endregion
+
+    final directAsins = <String>[];
+    void addDirect(String? code) {
+      final v = AudibleBookService.parseStandaloneAsin(code);
+      if (v == null) return;
+      if (!directAsins.contains(v)) directAsins.add(v);
+    }
+
+    for (final u in urlCandidates) {
+      addDirect(AudibleBookService.extractAsin(u));
+    }
+    // #region agent log
+    agentNdjsonLog(
+      hypothesisId: 'H1',
+      location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+      message: 'After direct extractAsin on candidates',
+      data: <String, Object?>{'directCount': directAsins.length},
+      runId: 'asin-debug-v2',
+    );
+    // #endregion
+
+    if (session.episodeId != null) {
+      final ep = session.episodeId!.trim();
+      if (ep.isNotEmpty) {
+        addDirect(AudibleBookService.extractAsin(ep));
+        addDirect(AudibleBookService.parseStandaloneAsin(ep));
+        // #region agent log
+        agentNdjsonLog(
+          hypothesisId: 'H_ASIN_EPISODEID',
+          location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+          message: 'ASIN candidates from episodeId fallback',
+          data: <String, Object?>{'hasChaptersJson': session.chaptersJson != null},
+          runId: 'post-asin-fallback',
+        );
+        // #endregion
+      }
+    }
+
+    final payload =
+        AudibleBookService.parseChaptersPayload(session.chaptersJson);
+    addDirect(AudibleBookService.parseStandaloneAsin(payload?.asin));
+    if (payload?.asin != null) {
+      // #region agent log
+      agentNdjsonLog(
+        hypothesisId: 'H_ASIN_CHAPTERSJSON',
+        location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+        message: 'ASIN from chaptersJson fallback',
+        data: const <String, Object?>{},
+        runId: 'post-asin-fallback',
+      );
+      // #endregion
+    }
+
+    final audnexTried = <String>{};
+    var hadAudnexusBookResponse = false;
+
+    Future<
+        ({
+          String asin,
+          Map<String, dynamic> book,
+          List<Map<String, dynamic>> chapters,
+        })?> probeAudnex(Iterable<String> codes) async {
+      for (final raw in codes) {
+        final cand = AudibleBookService.parseStandaloneAsin(raw);
+        if (cand == null) continue;
+        if (!audnexTried.add(cand)) continue;
+        try {
+          final b = await AudibleBookService.fetchBook(cand);
+          hadAudnexusBookResponse = true;
+          if (!_audnexusBookMatchesSessionTitle(b, session)) {
+            final a = cleanTitle(session.title);
+            final audT = (b['title'] as String?)?.trim() ?? '';
+            final bcl = cleanTitle(audT);
+            final sc = scoreSimilarity(a, bcl);
+            // #region agent log
+            agentNdjsonLog(
+              hypothesisId: 'H7',
+              location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+              message: 'Audnexus title mismatch vs session (skip ASIN)',
+              data: <String, Object?>{
+                'score': (sc * 100).round() / 100,
+                'sessionCleanLen': a.length,
+                'audnexCleanLen': bcl.length,
+              },
+              runId: 'post-title-gate',
+            );
+            // #endregion
+            continue;
+          }
+          final ch = await AudibleBookService.fetchChapters(cand);
+          // #region agent log
+          agentNdjsonLog(
+            hypothesisId: 'H_FIX',
+            location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+            message: 'Audnexus accepted ASIN',
+            data: <String, Object?>{
+              'triedCount': audnexTried.length,
+            },
+            runId: 'post-fix-verify',
+          );
+          // #endregion
+          return (asin: cand, book: b, chapters: ch);
+        } on AudibleApiException catch (e) {
+          final msg = e.message;
+          final soft = msg.contains('404') ||
+              msg.toLowerCase().contains('empty');
+          // #region agent log
+          agentNdjsonLog(
+            hypothesisId: 'H6',
+            location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+            message: 'Audnexus candidate rejected',
+            data: <String, Object?>{
+              'soft404OrEmpty': soft,
+              'errPreview': msg.length > 72 ? '${msg.substring(0, 72)}…' : msg,
+            },
+            runId: 'post-fix-verify',
+          );
+          // #endregion
+          if (soft) continue;
+          throw PipelineException(msg, retryable: true);
+        }
+      }
+      return null;
+    }
+
+    var hit = await probeAudnex(directAsins);
+
+    if (hit == null) {
+      final seenScrape = <String>{};
+      var scrapeAttempts = 0;
+      final scraped = <String>[];
+      for (final u in urlCandidates) {
+        if (!seenScrape.add(u)) continue;
+        final lower = u.toLowerCase();
+        if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+          continue;
+        }
+        if (!lower.contains('audible.') && !lower.contains('adbl.co')) {
+          continue;
+        }
+        scrapeAttempts++;
+        scraped.addAll(
+          await AudibleBookService.scrapeAsinCandidatesFromAudiblePage(u),
+        );
+      }
+      // #region agent log
+      agentNdjsonLog(
+        hypothesisId: 'H2',
+        location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+        message: 'Scrape loop finished',
+        data: <String, Object?>{
+          'scrapeAttempts': scrapeAttempts,
+          'scrapedCandidateCount': scraped.length,
+        },
+        runId: 'asin-debug-v2',
+      );
+      // #endregion
+      hit = await probeAudnex(scraped);
+    }
+
+    if (hit == null) {
+      // #region agent log
+      final probe = session.sourceShareUrl?.trim().isNotEmpty == true
+          ? session.sourceShareUrl!.trim()
+          : session.episodeUrl?.trim().isNotEmpty == true
+              ? session.episodeUrl!.trim()
+              : '';
+      final uri = probe.isNotEmpty ? Uri.tryParse(probe) : null;
+      agentNdjsonLog(
+        hypothesisId: 'H_ASIN_MISS',
+        location: 'cloud_pipeline_service.dart:_runAudiblePipeline',
+        message: 'No usable ASIN / Audnexus match after probes',
+        data: <String, Object?>{
+          'sourceApp': session.sourceApp,
+          'probeLen': probe.length,
+          'probeHost': uri?.host,
+          'pathSegCount': uri?.pathSegments.length,
+          'hasAsinQueryKey': uri?.queryParameters.keys
+                  .map((k) => k.toLowerCase())
+                  .contains('asin') ??
+              false,
+          'episodeIdLen': session.episodeId?.length ?? 0,
+          'hasChaptersJson': session.chaptersJson != null,
+          'audnexTriedCount': audnexTried.length,
+          'hadAudnexusBookResponse': hadAudnexusBookResponse,
+        },
+        runId: 'pre-fix',
+      );
+      // #endregion
+      if (audnexTried.isEmpty) {
+        throw const PipelineException(
+          'Could not find an Audible book ID (ASIN) in this link. '
+          'Copy the full share URL from the Audible app (includes the ASIN).',
+          retryable: false,
+        );
+      }
+      if (hadAudnexusBookResponse) {
+        throw const PipelineException(
+          'The app found catalog entries for this link, but none matched the '
+          'book title from your share. Open the title on audible.com and use '
+          'Share from that book’s page, or paste a link that includes the product.',
+          retryable: false,
+        );
+      }
+      throw const PipelineException(
+        'Found IDs on the page, but none are in the public Audnexus catalog '
+        '(metadata API). Try another edition or open the title on audible.com '
+        'and share from the product page.',
+        retryable: false,
+      );
+    }
+
+    final asin = hit.asin;
+    final book = hit.book;
+    final chapters = hit.chapters;
+
+    final chaptersMap = <String, dynamic>{
+      'source': 'audible',
+      'asin': asin,
+      'chapters': chapters,
+    };
+
+    final chapter =
+        AudibleBookService.chapterForTimestamp(chapters, session.startTimeSec);
+    final chapterTitle = chapter['title'] as String? ?? 'This chapter';
+
+    var author = AudibleBookService.primaryAuthorName(book);
+    if (author.isEmpty) author = session.artist.trim();
+    final bookTitle = (book['title'] as String? ?? '').trim().isNotEmpty
+        ? (book['title'] as String).trim()
+        : session.title;
+
+    var audibleDescription = AudibleBookService.mergeDescriptionAndSummary(book);
+    if (audibleDescription.length > 12000) {
+      audibleDescription = '${audibleDescription.substring(0, 12000)}…';
+    }
+
+    final gbKey = _googleBooksKey;
+    var googleBooksSnippets = '';
+    if (gbKey.isNotEmpty) {
+      googleBooksSnippets = await AudibleBookService.fetchGoogleBooksDescription(
+        title: bookTitle,
+        author: author,
+        apiKey: gbKey,
+      );
+      if (googleBooksSnippets.length > 12000) {
+        googleBooksSnippets =
+            '${googleBooksSnippets.substring(0, 12000)}…';
+      }
+    }
+
+    final wikipediaFuture =
+        WikipediaSummaryService.fetchBookSummary(bookTitle, author);
+
+    final structured = AudibleBookService.buildStructuredMetadata(
+      book: book,
+      chapters: chapters,
+      activeChapter: chapter,
+    );
+
+    final catalogChapterLabel =
+        chapterTitle.replaceAll('\n', ' ').trim().replaceAll('"', "'");
+    final chapterIdx =
+        AudibleBookService.indexOfChapterWithStart(chapters, chapter);
+    final chapterNumberLabel =
+        chapterIdx != null ? '${chapterIdx + 1}' : '—';
+    final genreLine = AudibleBookService.genresLine(book);
+
+    ParsedSummary parsed;
+    var transcriptSourceStr = 'audible';
+
+    String? analystChapterPlainText;
+
+    final companionHit =
+        await GutenbergBookService.findPublicDomainCompanionForAudiobook(
+      audibleTitle: bookTitle,
+      audibleAuthor: author,
+    );
+    if (companionHit != null) {
+      try {
+        final fullText =
+            await GutenbergBookService.fetchBookText(companionHit.textUrl);
+        final gChapters = GutenbergBookService.splitIntoChapters(fullText);
+        final gi = GutenbergBookService.indexMatchingAudibleChapterTitle(
+          chapterTitle,
+          gChapters,
+        );
+        if (gi != null && gi < gChapters.length) {
+          final body = gChapters[gi].content.trim();
+          if (body.length >= 200) {
+            analystChapterPlainText = gChapters[gi].content;
+            chaptersMap['companionGutenbergId'] = companionHit.id;
+            chaptersMap['companionGutenbergTitle'] = companionHit.title;
+            chaptersMap['companionGutenbergAuthor'] = companionHit.author;
+            transcriptSourceStr = 'audible_pg';
+          }
+        }
+      } catch (e, st) {
+        debugPrint('[Pipeline] Audible↔Gutenberg companion skipped: $e\n$st');
+      }
+    }
+
+    if (analystChapterPlainText == null) {
+      try {
+        final olSvc = OpenLibraryService();
+        final olCandidates = await olSvc.findReadableEdition(bookTitle, author);
+        for (final match in olCandidates) {
+          final rawText = await olSvc.fetchPlainText(match.iaId);
+          if (rawText == null || rawText.trim().length < 200) continue;
+
+          final olChapters = GutenbergBookService.splitIntoChapters(rawText);
+          final oi = GutenbergBookService.indexMatchingAudibleChapterTitle(
+            chapterTitle,
+            olChapters,
+          );
+          if (oi == null || oi >= olChapters.length) continue;
+
+          final olBody = olChapters[oi].content.trim();
+          if (olBody.length < 200) continue;
+
+          analystChapterPlainText = olChapters[oi].content;
+          AudibleBookService.attachOpenLibraryCompanionFields(
+            chaptersMap,
+            companionOpenLibraryId: match.iaId,
+            openLibraryTitle: match.title,
+          );
+          transcriptSourceStr = 'audible_openlibrary';
+          break;
+        }
+      } catch (e, st) {
+        debugPrint('[Pipeline] Audible↔Open Library companion skipped: $e\n$st');
+      }
+    }
+
+    final wikipediaText = await wikipediaFuture;
+    final wikipediaBlock = wikipediaText.trim().isEmpty
+        ? '(No Wikipedia summary was retrieved for this search.)'
+        : wikipediaText.trim();
+    final googleBooksBlock = googleBooksSnippets.trim().isEmpty
+        ? '(No Google Books snippets were retrieved.)'
+        : googleBooksSnippets.trim();
+    final audibleDescBlock = audibleDescription.trim().isEmpty
+        ? '(No Audible / retailer description was returned for this ASIN.)'
+        : audibleDescription.trim();
+
+    var chapterTextForPrompt = analystChapterPlainText?.trim() ?? '';
+    if (chapterTextForPrompt.length > _maxTranscriptPromptChars) {
+      chapterTextForPrompt =
+          '${chapterTextForPrompt.substring(0, _maxTranscriptPromptChars)}…';
+    }
+
+    final analystPrompt = _buildAudibleAnalystGeminiPrompt(
+      title: bookTitle,
+      author: author.isNotEmpty ? author : 'Unknown author',
+      chapterTitle: catalogChapterLabel,
+      chapterNumber: chapterNumberLabel,
+      genre: genreLine.isNotEmpty ? genreLine : 'Unknown / not listed',
+      wikipediaText: wikipediaBlock,
+      googleBooksSnippets: googleBooksBlock,
+      audibleDescription: audibleDescBlock,
+      audnexusMetadata: structured,
+      chapterFullText: chapterTextForPrompt.isEmpty ? null : chapterTextForPrompt,
+    );
+
+    final rawSummary =
+        await _geminiGenerateFromUserText(analystPrompt, 8192);
+    parsed = _parseAudibleAnalystGeminiResponse(rawSummary, summaryStyle);
+
+    final chaptersStored = jsonEncode(chaptersMap);
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final bullets = parsed.bullets;
+    final quotes = parsed.quotes;
+
+    final share =
+        session.sourceShareUrl?.trim().isNotEmpty == true
+            ? session.sourceShareUrl!.trim()
+            : 'https://www.audible.com/pd/?asin=$asin';
+
+    await dao.updateSession(
+      ListeningSessionsCompanion(
+        id: Value(sessionId),
+        title: Value(bookTitle),
+        artist: Value(author),
+        saveMethod: Value(session.saveMethod),
+        startTimeSec: Value(session.startTimeSec),
+        endTimeSec: Value(session.endTimeSec),
+        rangeLabel: Value(session.rangeLabel),
+        createdAt: Value(session.createdAt),
+        status: const Value('done'),
+        summaryStyle: Value(summaryStyle.toJson()),
+        transcriptSource: Value(transcriptSourceStr),
+        bullet1: Value(bullets.isNotEmpty ? bullets[0] : null),
+        bullet2: Value(bullets.length > 1 ? bullets[1] : null),
+        bullet3: Value(bullets.length > 2 ? bullets[2] : null),
+        bullet4: Value(bullets.length > 3 ? bullets[3] : null),
+        bullet5: Value(bullets.length > 4 ? bullets[4] : null),
+        quote1: Value(quotes.isNotEmpty ? quotes[0] : null),
+        quote2: Value(quotes.length > 1 ? quotes[1] : null),
+        quote3: Value(quotes.length > 2 ? quotes[2] : null),
+        chaptersJson: Value(chaptersStored),
+        errorMessage: const Value(null),
+        episodeId: Value(asin),
+        episodeUrl: Value(share),
+        sourceShareUrl: Value(session.sourceShareUrl),
+        artworkUrl: Value(book['image'] as String?),
+        updatedAt: Value(now),
+      ),
+    );
+
+    await MomentsStatsService.incrementSummariesDone();
+  }
+
+  static String? _resolveGutenbergTextUrl(
+    ListeningSession session,
+    Map<String, String>? episodeHint,
+  ) {
+    final hint = episodeHint?['gutenbergTextUrl']?.trim();
+    if (hint != null && hint.isNotEmpty) return hint;
+
+    for (final u in [session.sourceShareUrl, session.episodeUrl]) {
+      final t = u?.trim();
+      if (t != null &&
+          t.isNotEmpty &&
+          _isLikelyGutenbergPlainTextUrl(t)) {
+        return t;
+      }
+    }
+
+    final cj = session.chaptersJson?.trim();
+    if (cj != null &&
+        cj.contains('gutenberg')) {
+      try {
+        final m = jsonDecode(cj) as Map<String, dynamic>;
+        if (m['source'] == 'gutenberg') {
+          final tu = m['textUrl'] as String?;
+          if (tu != null && tu.trim().isNotEmpty) return tu.trim();
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  static bool _isLikelyGutenbergPlainTextUrl(String u) {
+    final lower = u.toLowerCase();
+    if (!lower.contains('gutenberg.org')) return false;
+    if (lower.contains('.htm') || lower.contains('.html')) return false;
+    return lower.contains('.txt') ||
+        lower.contains('.utf-8') ||
+        lower.contains('/cache/epub/');
+  }
+
+  static int _gutenbergSelectedChapterIndexFromSession(
+    ListeningSession session,
+  ) {
+    try {
+      final cj = session.chaptersJson?.trim();
+      if (cj == null || cj.isEmpty) return 0;
+      final m = jsonDecode(cj) as Map<String, dynamic>;
+      if (m['source'] != 'gutenberg') return 0;
+      final i = m['selectedChapterIndex'];
+      if (i is int) return i;
+      if (i is num) return i.toInt();
+    } catch (_) {}
+    return 0;
+  }
+
+  /// Project Gutenberg full text → same summarization path as podcasts.
+  /// Resolves text URL from [episodeHint], [sourceShareUrl], [episodeUrl], or
+  /// prior [chaptersJson] (for retry).
+  /// Optional hint: `gutenbergChapterIndex` (0-based), `gutenbergBookId`.
+  Future<void> _runGutenbergPipeline(
+    String sessionId,
+    ListeningSession session,
+    SummaryStyle summaryStyle,
+    Map<String, String> episodeHint,
+    String textUrl,
+  ) async {
+    try {
+      await dao.updateSession(
+        ListeningSessionsCompanion(
+          id: Value(sessionId),
+          episodeUrl: Value(textUrl),
+          updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
+        ),
+      );
+
+      final fullText = await GutenbergBookService.fetchBookText(textUrl);
+      final chapters = GutenbergBookService.splitIntoChapters(fullText);
+      if (chapters.isEmpty) {
+        throw const PipelineException(
+          'Gutenberg text was empty or could not be split into chapters',
+          retryable: false,
+        );
+      }
+
+      var idx = int.tryParse(episodeHint['gutenbergChapterIndex'] ?? '') ??
+          _gutenbergSelectedChapterIndexFromSession(session);
+      if (idx < 0) idx = 0;
+      if (idx >= chapters.length) idx = chapters.length - 1;
+      final ch = chapters[idx];
+
+      final timedTranscript =
+          _syntheticTimestampedTranscriptFromPlainText(ch.content);
+      if (timedTranscript.trim().isEmpty) {
+        throw const PipelineException(
+          'Selected Gutenberg chapter has no text',
+          retryable: false,
+        );
+      }
+
+      final segmentContext = _buildGutenbergSegmentContext(
+        session: session,
+        chapter: ch,
+        chapterIndex0: idx,
+        totalChapters: chapters.length,
+      );
+
+      final chapterTitleLock =
+          ch.chapterTitle.replaceAll('\n', ' ').trim().replaceAll('"', "'");
+      final rawSummary = await _generateSummary(
+        timedTranscript,
+        summaryStyle,
+        segmentContext: segmentContext,
+        fixedCatalogChapterTitle:
+            chapterTitleLock.isNotEmpty ? chapterTitleLock : null,
+      );
+      final parsed = _parseSummaryResponse(rawSummary, summaryStyle);
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final bullets = parsed.bullets;
+      final quotes = parsed.quotes;
+
+      final bookId = episodeHint['gutenbergBookId']?.trim();
+      final chaptersStored = jsonEncode({
+        'source': 'gutenberg',
+        'textUrl': textUrl,
+        if (bookId != null && bookId.isNotEmpty) 'gutenbergBookId': bookId,
+        'chapters': chapters
+            .map(
+              (c) => {
+                'chapterNumber': c.chapterNumber,
+                'chapterTitle': c.chapterTitle,
+              },
+            )
+            .toList(),
+        'selectedChapterIndex': idx,
+      });
+
+      final epId = (bookId != null && bookId.isNotEmpty)
+          ? bookId
+          : session.episodeId;
+
+      await dao.updateSession(
+        ListeningSessionsCompanion(
+          id: Value(sessionId),
+          title: Value(session.title),
+          artist: Value(session.artist),
+          saveMethod: Value(session.saveMethod),
+          startTimeSec: Value(session.startTimeSec),
+          createdAt: Value(session.createdAt),
+          status: const Value('done'),
+          summaryStyle: Value(summaryStyle.toJson()),
+          transcriptSource: const Value('gutenberg'),
+          bullet1: Value(bullets.isNotEmpty ? bullets[0] : null),
+          bullet2: Value(bullets.length > 1 ? bullets[1] : null),
+          bullet3: Value(bullets.length > 2 ? bullets[2] : null),
+          bullet4: Value(bullets.length > 3 ? bullets[3] : null),
+          bullet5: Value(bullets.length > 4 ? bullets[4] : null),
+          quote1: Value(quotes.isNotEmpty ? quotes[0] : null),
+          quote2: Value(quotes.length > 1 ? quotes[1] : null),
+          quote3: Value(quotes.length > 2 ? quotes[2] : null),
+          chaptersJson: Value(chaptersStored),
+          errorMessage: const Value(null),
+          updatedAt: Value(now),
+          episodeId: Value(epId),
+          episodeUrl: Value(textUrl),
+        ),
+      );
+
+      await MomentsStatsService.incrementSummariesDone();
+    } on GutenbergBookException catch (e) {
+      throw PipelineException(e.message, retryable: true);
+    }
+  }
+
+  String _buildGutenbergSegmentContext({
+    required ListeningSession session,
+    required GutenbergChapter chapter,
+    required int chapterIndex0,
+    required int totalChapters,
+  }) {
+    final book = session.title.trim();
+    final author = session.artist.trim();
+    final exactTitle = chapter.chapterTitle.replaceAll('\n', ' ').trim();
+    return '''
+You are summarizing **Project Gutenberg** e-text (written prose—not a podcast).
+
+Book: ${book.isNotEmpty ? book : 'Unknown title'}
+Author: ${author.isNotEmpty ? author : 'Unknown'}
+
+**Chapter identity (authoritative — from the app’s text splitter, not guessed):** **"$exactTitle"** (chapter ${chapterIndex0 + 1} of $totalChapters in this book).
+Do **not** write that this is "likely" chapter X, "probably" section Y, or invent a different chapter name. The user’s selection is fixed; refer to **this chapter** or repeat **"$exactTitle"** verbatim.
+
+The passage below is **only** this chapter’s text. Bracket markers like [00:00] are **synthetic** for citation. For TIME fields in your output, copy the **nearest preceding […] marker** from this passage (MM:SS or H:MM:SS).
+
+Summarize **only** this passage. Quotes must be **verbatim** from it.
+
+Transcript segment:
+'''.trim();
+  }
+
+  /// Single Gemini prompt for **all** Audible summaries (thin + full-text companion).
+  String _buildAudibleAnalystGeminiPrompt({
+    required String title,
+    required String author,
+    required String chapterTitle,
+    required String chapterNumber,
+    required String genre,
+    required String wikipediaText,
+    required String googleBooksSnippets,
+    required String audibleDescription,
+    required String audnexusMetadata,
+    String? chapterFullText,
+  }) {
+    final chapterBlock = (chapterFullText == null || chapterFullText.isEmpty)
+        ? '(No full chapter text is available in the app. Rely on the additional context above and your deep knowledge of this book as instructed.)'
+        : chapterFullText;
+
+    return '''
+You are an expert audiobook analyst with deep knowledge of literature, non-fiction, and storytelling. Your job is to summarize a specific chapter of an audiobook as if you have the actual text of that chapter in front of you.
+
+## Book Information
+Title: $title
+Author: $author
+Chapter: $chapterTitle
+Chapter Number: $chapterNumber
+Genre: $genre
+
+## Additional Context You Have
+Wikipedia summary: $wikipediaText
+
+Google Books snippets: $googleBooksSnippets
+
+Audible chapter description: $audibleDescription
+
+Audnexus catalog metadata (chapter list, runtime, publisher, etc.):
+$audnexusMetadata
+
+## Verbatim chapter text (when supplied by the app)
+$chapterBlock
+
+## Your Task
+Using ALL the context above AND your own deep training knowledge of this book, produce a chapter summary that feels like it was written by someone who just finished reading that exact chapter.
+
+## Rules You Must Follow
+- Write as if you READ the chapter, not as if you are guessing
+- Never say phrases like "likely", "probably", "may", "might", "appears to"
+- Never say "based on available information" or "from what I know"
+- Never admit uncertainty — write with total authority
+- Use the author's actual tone and voice
+- Reference specific concepts, frameworks, or ideas the author is known for using in this book
+- If the book uses a specific structure (laws, habits, rules, principles) reflect that structure in your summary
+- Write in present tense as if describing what the chapter does right now
+
+## Output Format
+Produce exactly this structure, nothing more, nothing less:
+
+**The Core Idea**
+One single powerful sentence that captures what this chapter is fundamentally about. No fluff. Just the sharpest possible distillation.
+
+**What This Chapter Covers**
+3-5 paragraphs written in a flowing, narrative style — not bullet points. Write this the way a brilliant friend who just read the chapter would explain it to you over coffee. Include:
+- The main argument or story the author presents
+- Any specific examples, anecdotes, or case studies the author uses
+- The key concept or framework introduced in this chapter
+- How this chapter connects to the broader thesis of the book
+
+**The Insights That Stick**
+3-5 of the most memorable, actionable, or thought-provoking ideas from this chapter. Write each one as a complete, standalone insight — the kind of thing you'd underline or screenshot. Each should feel like it came directly from the author's pen.
+
+**If You Do One Thing**
+One single, concrete, specific action the listener can take TODAY based on this chapter. Not vague advice. A real action with real detail.
+
+**The Bigger Picture**
+One short paragraph explaining how this chapter fits into the arc of the whole book — what came before, what this chapter adds, and what it sets up next.
+
+## Tone Guidelines
+- Match the author's voice exactly:
+  - James Clear → precise, clean, scientific but warm
+  - Malcolm Gladwell → storytelling-first, surprising, journalistic
+  - Yuval Noah Harari → sweeping, philosophical, slightly provocative
+  - Brené Brown → vulnerable, research-backed, emotionally warm
+  - Robert Greene → authoritative, historical, slightly dark
+  - For any other author → study their known writing style and match it
+- Never sound like an AI summary
+- Never use corporate buzzwords
+- Write like a human who loves this book
+'''.trim();
+  }
+
+  ParsedSummary _parseAudibleAnalystGeminiResponse(
+    String raw,
+    SummaryStyle style,
+  ) {
+    String? sectionAfterHeader(String full, String header, String? nextHeader) {
+      final esc = RegExp.escape(header);
+      final nextEsc = nextHeader != null ? RegExp.escape(nextHeader) : '';
+      final nextPat = nextEsc.isEmpty
+          ? r'\Z'
+          : r'(?=\n\s*(?:\*{0,2}\s*)' + nextEsc + r'(?:\s*\*{0,2})?)';
+
+      final re = RegExp(
+        r'(?:^|\n)\s*(?:\*{2}\s*)?' +
+            esc +
+            r'(?:\s*\*{2})?\s*[:\s]*\n*(.*?)' +
+            nextPat,
+        dotAll: true,
+        caseSensitive: false,
+      );
+      final m = re.firstMatch(full);
+      return m?.group(1)?.trim();
+    }
+
+    final t = raw.trim();
+    final core =
+        sectionAfterHeader(t, 'The Core Idea', 'What This Chapter Covers') ?? '';
+    final covers = sectionAfterHeader(
+          t,
+          'What This Chapter Covers',
+          'The Insights That Stick',
+        ) ??
+        '';
+    final insights = sectionAfterHeader(
+          t,
+          'The Insights That Stick',
+          'If You Do One Thing',
+        ) ??
+        '';
+    final oneThing =
+        sectionAfterHeader(t, 'If You Do One Thing', 'The Bigger Picture') ??
+            '';
+    final bigger = sectionAfterHeader(t, 'The Bigger Picture', null) ?? '';
+
+    final bullets = <String>[
+      if (core.isNotEmpty) '**The Core Idea**\n$core',
+      if (covers.isNotEmpty) '**What This Chapter Covers**\n$covers',
+      if (insights.isNotEmpty) '**The Insights That Stick**\n$insights',
+      if (oneThing.isNotEmpty) '**If You Do One Thing**\n$oneThing',
+      if (bigger.isNotEmpty) '**The Bigger Picture**\n$bigger',
+    ];
+
+    if (bullets.isEmpty && t.isNotEmpty) {
+      return ParsedSummary(
+        bullets: [t],
+        quotes: const [],
+        style: style,
+      );
+    }
+
+    return ParsedSummary(
+      bullets: bullets,
+      quotes: const [],
+      style: style,
+    );
+  }
+
+  /// Periodic [MM:SS] markers so the same TIME/QUOTE rules as podcast transcripts apply.
+  static String _syntheticTimestampedTranscriptFromPlainText(String plain) {
+    final words =
+        plain.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+    if (words.isEmpty) return '';
+
+    final buf = StringBuffer();
+    const everyWords = 150;
+    var markerSec = 0;
+    for (var i = 0; i < words.length; i++) {
+      if (i % everyWords == 0) {
+        buf.write('${_formatTranscriptTimeMarker(markerSec)} ');
+        markerSec += 15;
+      }
+      buf.write('${words[i]} ');
+    }
+    return buf.toString().trimRight();
+  }
+
   // ═════════════════════════════════════════════════════════════════════════
   // STEP 2a: RESOLVE VIA ITUNES LOOKUP (exact, no API key needed)
   // ═════════════════════════════════════════════════════════════════════════
@@ -408,6 +1274,38 @@ class CloudPipelineService {
     final lev = 1.0 - _levenshteinDistance(s1, s2) / maxLen;
     final dice = StringSimilarity.compareTwoStrings(s1, s2);
     return (lev + dice) / 2.0;
+  }
+
+  /// When the session has a real scraped title (not generic), Audnexus [book] must match.
+  static bool _audibleSessionTitleIsSpecific(String raw) {
+    final s = raw.trim();
+    if (s.length < 10) return false;
+    final l = s.toLowerCase();
+    const generic = {
+      'audible episode',
+      'spotify episode',
+      'unknown episode',
+      'episode',
+    };
+    if (generic.contains(l)) return false;
+    return true;
+  }
+
+  static bool _audnexusBookMatchesSessionTitle(
+    Map<String, dynamic> book,
+    ListeningSession session,
+  ) {
+    if (!_audibleSessionTitleIsSpecific(session.title)) return true;
+    final aud = (book['title'] as String?)?.trim() ?? '';
+    if (aud.isEmpty) return true;
+    final a = cleanTitle(session.title);
+    final b = cleanTitle(aud);
+    if (a.isEmpty || b.isEmpty) return true;
+    final short = a.length <= b.length ? a : b;
+    final long = a.length <= b.length ? b : a;
+    if (short.length >= 12 && long.contains(short)) return true;
+    final sc = scoreSimilarity(a, b);
+    return sc >= 0.42;
   }
 
   static int _levenshteinDistance(String a, String b) {
@@ -1169,11 +2067,10 @@ class CloudPipelineService {
         '';
   }
 
-  Future<String> _generateSummary(
-    String transcript,
-    SummaryStyle style, {
-    required String segmentContext,
-  }) async {
+  Future<String> _geminiGenerateFromUserText(
+    String userText,
+    int maxOutputTokens,
+  ) async {
     if (_geminiKey.isEmpty || _geminiKey == 'placeholder') {
       throw const PipelineException(
         'Missing GEMINI_API_KEY. Add a Google AI Studio key to .env (starts with AIza), '
@@ -1182,25 +2079,18 @@ class CloudPipelineService {
       );
     }
 
-    final built = _buildPromptBundle(
-      transcript,
-      style,
-      segmentContext: segmentContext,
-    );
-
-    // REST shape matches https://ai.google.dev/api — explicit `role` avoids edge cases.
     final requestJson = jsonEncode({
       'contents': [
         {
           'role': 'user',
           'parts': [
-            {'text': built.prompt}
+            {'text': userText}
           ],
         },
       ],
       'generationConfig': {
         'temperature': 0.35,
-        'maxOutputTokens': built.maxOutputTokens,
+        'maxOutputTokens': maxOutputTokens,
       },
     });
 
@@ -1236,7 +2126,6 @@ class CloudPipelineService {
           ? 'AI service (${response.statusCode}): $detail'
           : 'AI service error (${response.statusCode})';
 
-      // 429 is often per-model quota (e.g. free tier limit:0 on 2.0-flash) — try next model.
       if (response.statusCode == 429) {
         lastFailure = PipelineException(
           _ellipsisMessage(msg),
@@ -1245,7 +2134,6 @@ class CloudPipelineService {
         continue;
       }
 
-      // Key problems repeat for every model — don't burn 5 identical requests.
       if (_geminiResponseIsApiKeyProblem(response.statusCode, response.body)) {
         final k = _geminiKey;
         throw PipelineException(
@@ -1259,7 +2147,6 @@ class CloudPipelineService {
         retryable: response.statusCode >= 500,
       );
 
-      // Try another model if this key/model combo is rejected or unknown.
       if (response.statusCode == 403 || response.statusCode == 404) {
         continue;
       }
@@ -1272,6 +2159,22 @@ class CloudPipelineService {
           'AI service error — check Gemini API key and Generative Language API',
           retryable: false,
         );
+  }
+
+  Future<String> _generateSummary(
+    String transcript,
+    SummaryStyle style, {
+    required String segmentContext,
+    /// When set (e.g. Gutenberg), Gemini must not hedge on which chapter/passage this is.
+    String? fixedCatalogChapterTitle,
+  }) async {
+    final built = _buildPromptBundle(
+      transcript,
+      style,
+      segmentContext: segmentContext,
+      fixedCatalogChapterTitle: fixedCatalogChapterTitle,
+    );
+    return _geminiGenerateFromUserText(built.prompt, built.maxOutputTokens);
   }
 
   /// Bracket marker at [absSec] in episode audio: [MM:SS] or [H:MM:SS] if ≥1h.
@@ -1470,6 +2373,7 @@ Transcript segment:
     String transcript,
     SummaryStyle style, {
     required String segmentContext,
+    String? fixedCatalogChapterTitle,
   }) {
     final capped = transcript.length > _maxTranscriptPromptChars
         ? transcript.substring(0, _maxTranscriptPromptChars)
@@ -1480,36 +2384,54 @@ Transcript segment:
 
     final timeNote = _timestampAccuracyNote(capped);
 
+    final chapterIdentityLock = (fixedCatalogChapterTitle != null &&
+            fixedCatalogChapterTitle.trim().isNotEmpty)
+        ? '''
+**CHAPTER / PASSAGE IDENTITY (mandatory):** The app fixed this section as: **"${fixedCatalogChapterTitle.trim().replaceAll('"', "'")}"**
+- Do **not** hedge with "likely this chapter", "probably section…", or guess a different chapter title or number.
+- You may say **this chapter** or repeat that title **verbatim** when referring to the section.
+
+'''
+        : '';
+
     const insightFormat = 'For EACH block use exactly this shape (TIME must be on its own line after the insight):\n'
         'INSIGHT: [2–6 sentences: one major theme, story arc, or argument from the transcript—concrete details, not fluff]\n'
         'TIME: [copy exactly from the nearest transcript bracket marker before this content—format MM:SS or H:MM:SS]\n'
         'QUOTE: [one supporting verbatim sentence from the transcript immediately after that marker]\n'
         '**The TIME line for a block applies to both the INSIGHT and the QUOTE in that block—use the same value twice if needed; it must match the bracket marker before the quoted words.**\n\n';
 
+    final proseNote = fixedCatalogChapterTitle != null &&
+            fixedCatalogChapterTitle.trim().isNotEmpty
+        ? 'This is **book chapter prose** (not a podcast). Follow the CHAPTER IDENTITY rules above.\n\n'
+        : '';
+
     final String taskBody;
     switch (style) {
       case SummaryStyle.insights:
-        taskBody = 'You are summarizing a podcast for someone who will **not** re-listen. '
+        taskBody = '${chapterIdentityLock}${proseNote}'
+            'You are summarizing ${fixedCatalogChapterTitle != null ? 'a **book chapter**' : 'a podcast'} for someone who will **not** re-read or re-listen. '
             'They need the **main ideas, reasoning, and what to remember** from this segment.\n\n'
             '$richness'
             '$timeNote'
-            'Return **exactly 5** blocks (we store up to five). Each INSIGHT must be a **dense mini-summary** of a different major part of the discussion—'
-            'not a single short sentence. Cover the transcript broadly (beginning, middle, end / distinct topics).\n\n'
+            'Return **exactly 5** blocks (we store up to five). Each INSIGHT must be a **dense mini-summary** of a different major part of the ${fixedCatalogChapterTitle != null ? 'chapter' : 'discussion'}—'
+            'not a single short sentence. Cover the ${fixedCatalogChapterTitle != null ? 'chapter' : 'transcript'} broadly (beginning, middle, end / distinct topics).\n\n'
             '$insightFormat'
             'Transcript:\n$capped';
         break;
       case SummaryStyle.deepNotes:
-        taskBody = 'You are producing **deep notes** for a long-form podcast segment. '
+        taskBody = '${chapterIdentityLock}${proseNote}'
+            'You are producing **deep notes** for a long-form ${fixedCatalogChapterTitle != null ? 'book chapter' : 'podcast segment'}. '
             'The reader wants detail: how ideas connect, nuances, examples, and conclusions.\n\n'
             '$richness'
             '$timeNote'
             'Return **exactly 5** blocks. Each INSIGHT should be **longer and richer** than a normal bullet—'
-            'several sentences, sub-points if needed—while staying grounded in the transcript.\n\n'
+            'several sentences, sub-points if needed—while staying grounded in the ${fixedCatalogChapterTitle != null ? 'chapter text' : 'transcript'}.\n\n'
             '$insightFormat'
             'Transcript:\n$capped';
         break;
       case SummaryStyle.actionItems:
-        taskBody = 'You extract actionable takeaways from this podcast segment only.\n\n'
+        taskBody = '${chapterIdentityLock}${proseNote}'
+            'You extract actionable takeaways from this ${fixedCatalogChapterTitle != null ? 'chapter' : 'podcast segment'} only.\n\n'
             '$richness'
             '$timeNote'
             'Return **up to 5** action items (use 5 if the transcript is long and rich enough). '
@@ -1523,7 +2445,8 @@ Transcript segment:
         break;
       case SummaryStyle.smartChapters:
         final chapterCount = n > 60000 ? '10–14' : (n > 20000 ? '6–10' : '4–6');
-        taskBody = 'You are a podcast chapter detector for this segment only.\n\n'
+        taskBody = '${chapterIdentityLock}${proseNote}'
+            'You are a ${fixedCatalogChapterTitle != null ? 'subsection' : 'podcast chapter'} detector for this segment only.\n\n'
             '$richness'
             '$timeNote'
             'Detect topic changes. For long transcripts, return **$chapterCount chapters** so the whole arc is represented.\n'
@@ -1536,7 +2459,8 @@ Transcript segment:
         break;
       case SummaryStyle.keyQuotes:
         final quoteCount = n > 40000 ? '5' : '4';
-        taskBody = 'You extract the strongest verbatim quotes from this segment only.\n\n'
+        taskBody = '${chapterIdentityLock}${proseNote}'
+            'You extract the strongest verbatim quotes from this segment only.\n\n'
             '$richness'
             '$timeNote'
             'Return **$quoteCount** verbatim quotes (long transcript → more quotes). '

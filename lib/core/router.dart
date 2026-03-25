@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../screens/book_lookup/book_lookup_screen.dart';
 import '../screens/auth/auth_screen.dart';
 import '../screens/home/home_screen.dart';
 import '../screens/library/library_screen.dart';
@@ -83,6 +84,14 @@ GoRouter createRouter(SharedPreferences prefs) {
         pageBuilder: (context, state) => psnTransitionPage<void>(
           key: state.pageKey,
           child: const ManualEntryScreen(),
+        ),
+      ),
+      GoRoute(
+        path: '/book-lookup',
+        parentNavigatorKey: _rootNavigatorKey,
+        pageBuilder: (context, state) => psnTransitionPage<void>(
+          key: state.pageKey,
+          child: const BookLookupScreen(),
         ),
       ),
       GoRoute(
